@@ -43,8 +43,18 @@ const corsOptions = {
   credentials: true
 };
 
-app.use(cors(corsOptions));
-app.use(express.json());
+app.use(cors(corsOptions));app.use(express.json());
+
+// HTTP Request Logger Middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'Unknown IP';
+    console.log(`[HTTP] ${req.method} ${req.originalUrl} | Status: ${res.statusCode} | IP: ${clientIp} | ${duration}ms`);
+  });
+  next();
+});
 
 // Helper: Validate session token and check expiry (24-hour window)
 const validateSession = async (sessionToken) => {
@@ -102,7 +112,7 @@ const activeSocketMappings = {}; // socket.id -> { studentId, classroomId }
 
   // Event-driven real-time socket listeners
 io.on('connection', (socket) => {
-  console.log(`Client connected: ${socket.id}`);
+  console.log(`[SOCKET] Client connected: ${socket.id}`);
 
   // Join room
   socket.on('room:join', (data) => {
@@ -230,11 +240,20 @@ io.on('connection', (socket) => {
       delete activeSocketMappings[socket.id];
       io.to(mapping.classroomId).emit('classroom:roster_update', { studentId: mapping.studentId, connected: false });
     }
-    console.log(`Client disconnected: ${socket.id}`);
+    console.log(`[SOCKET] Client disconnected: ${socket.id}`);
   });
 });
 
 // REST API Endpoints
+
+// Health Check Endpoints
+app.get('/', (req, res) => {
+  res.status(200).json({ status: 'ok', message: 'Backend is active and running on port 5000!' });
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', message: 'Backend is active and running on port 5000!' });
+});
 
 // 1. Student Registration & OTP generation
 app.post('/api/register', async (req, res) => {
@@ -1486,5 +1505,5 @@ React state updates are batched. Read state updates using functional updaters wh
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Backend Server running on port ${PORT}`);
+  console.log(`[SYSTEM] Backend Server running on port ${PORT}`);
 });
