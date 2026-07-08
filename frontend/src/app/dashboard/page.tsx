@@ -18,7 +18,8 @@ import {
   User, 
   School,
   Lock,
-  ChevronRight
+  ChevronRight,
+  CheckCircle
 } from 'lucide-react';
 
 interface ClassroomInfo {
@@ -202,14 +203,14 @@ export default function Dashboard() {
           {/* Joined Classrooms Column */}
           <div className="lg:col-span-2 space-y-4">
             {/* Active Assignments Queue */}
-            {assignments.length > 0 && (
+            {assignments.filter(ass => (ass.submittedQuestionIds?.length || 0) < ass.questions.length).length > 0 && (
               <div className="space-y-3 mb-8">
                 <h2 className="text-sm font-bold text-violet-400 uppercase tracking-wider flex items-center gap-2">
                   <span className="animate-pulse w-2 h-2 rounded-full bg-violet-500" />
-                  <span>Your Active Assignments ({assignments.length})</span>
+                  <span>Your Active Assignments ({assignments.filter(ass => (ass.submittedQuestionIds?.length || 0) < ass.questions.length).length})</span>
                 </h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {assignments.map(ass => (
+                  {assignments.filter(ass => (ass.submittedQuestionIds?.length || 0) < ass.questions.length).map(ass => (
                     <div
                       key={ass.id}
                       onClick={() => {
@@ -230,7 +231,7 @@ export default function Dashboard() {
                         </p>
                       </div>
                       <div className="flex items-center justify-between text-[11px] text-violet-400 mt-4 font-bold group-hover:text-violet-300">
-                        <span>{ass.submittedQuestionIds?.length === ass.questions.length ? 'Review / Completed' : 'Start Assignment'}</span>
+                        <span>Start Assignment</span>
                         <ChevronRight className="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
                       </div>
                     </div>
@@ -339,6 +340,44 @@ export default function Dashboard() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* Completed Assignments Queue */}
+            {assignments.filter(ass => (ass.submittedQuestionIds?.length || 0) === ass.questions.length).length > 0 && (
+              <div className="space-y-3 mt-8">
+                <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 text-emerald-500" />
+                  <span>Completed Assignments ({assignments.filter(ass => (ass.submittedQuestionIds?.length || 0) === ass.questions.length).length})</span>
+                </h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {assignments.filter(ass => (ass.submittedQuestionIds?.length || 0) === ass.questions.length).map(ass => (
+                    <div
+                      key={ass.id}
+                      onClick={() => {
+                        window.location.href = `/classroom?id=${ass.classroom_id}&mode=assignment&assignmentId=${ass.id}`;
+                      }}
+                      className="p-5 rounded-2xl border border-slate-800 bg-slate-950/20 hover:bg-slate-900/30 cursor-pointer hover:border-slate-700 transition-all duration-200 flex flex-col justify-between group min-h-[130px]"
+                    >
+                      <div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] uppercase font-extrabold tracking-widest text-slate-500">Completed Challenge</span>
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {ass.questions.length} / {ass.questions.length} Completed
+                          </span>
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-400 mt-2 line-clamp-1">{ass.title}</h4>
+                        <p className="text-[11px] text-emerald-500/80 mt-1">
+                          ✓ Submitted successfully
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 mt-4 font-bold group-hover:text-slate-350">
+                        <span>Review Code & Answers</span>
+                        <ChevronRight className="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

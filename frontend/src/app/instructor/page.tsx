@@ -125,7 +125,7 @@ export default function InstructorDashboard() {
   const [selectedAssignment, setSelectedAssignment] = useState<any>(null);
   const [assTitle, setAssTitle] = useState('');
   const [assQuestions, setAssQuestions] = useState<any[]>([
-    { codeTaskPrompt: '', reasoningPrompt: '', reasoningType: 'typed', options: [], timerSeconds: '' }
+    { codeTaskPrompt: '', reasoningPrompt: '', reasoningType: 'typed', options: [], optionsText: '', timerSeconds: '' }
   ]);
   const [assTargets, setAssTargets] = useState<string[]>([]);
   const [assStatus, setAssStatus] = useState<'draft' | 'active' | 'closed'>('draft');
@@ -1492,7 +1492,7 @@ export default function InstructorDashboard() {
                       <div className="flex justify-between items-center">
                         <label className="block text-[9px] uppercase font-bold text-slate-500">Question Queue ({assQuestions.length})</label>
                         <button
-                          onClick={() => setAssQuestions(prev => [...prev, { codeTaskPrompt: '', reasoningPrompt: '', reasoningType: 'typed', options: [], timerSeconds: '' }])}
+                          onClick={() => setAssQuestions(prev => [...prev, { codeTaskPrompt: '', reasoningPrompt: '', reasoningType: 'typed', options: [], optionsText: '', timerSeconds: '' }])}
                           className="text-[10px] text-violet-400 font-bold hover:text-violet-300"
                         >
                           + Add Question
@@ -1565,9 +1565,10 @@ export default function InstructorDashboard() {
                               <input
                                 type="text"
                                 placeholder="Options (comma separated, e.g. A, B, C, D)"
-                                value={q.options ? q.options.join(', ') : ''}
+                                value={q.optionsText !== undefined ? q.optionsText : (q.options ? q.options.join(', ') : '')}
                                 onChange={(e) => {
                                   const updated = [...assQuestions];
+                                  updated[idx].optionsText = e.target.value;
                                   updated[idx].options = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
                                   setAssQuestions(updated);
                                 }}
@@ -1603,7 +1604,13 @@ export default function InstructorDashboard() {
                               status: assStatus,
                               openAt: assStatus === 'active' ? new Date().toISOString() : null,
                               closeAt: assStatus === 'closed' ? new Date().toISOString() : null,
-                              questions: assQuestions
+                              questions: assQuestions.map((q: any) => ({
+                                codeTaskPrompt: q.codeTaskPrompt,
+                                reasoningPrompt: q.reasoningPrompt,
+                                reasoningType: q.reasoningType,
+                                options: q.options || [],
+                                timerSeconds: q.timerSeconds
+                              }))
                             };
 
                             const res = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/assignments`, {
@@ -1619,7 +1626,7 @@ export default function InstructorDashboard() {
                             alert('Assignment saved successfully!');
                             setAssTitle('');
                             setAssTargets([]);
-                            setAssQuestions([{ codeTaskPrompt: '', reasoningPrompt: '', reasoningType: 'typed', options: [], timerSeconds: '' }]);
+                            setAssQuestions([{ codeTaskPrompt: '', reasoningPrompt: '', reasoningType: 'typed', options: [], optionsText: '', timerSeconds: '' }]);
                             setAssStatus('draft');
                             setSelectedAssignment(null);
                             fetchClassroomDetails();
@@ -1648,12 +1655,13 @@ export default function InstructorDashboard() {
                           setAssTargets(ass.assigned_to || []);
                           setAssStatus(ass.status);
                           setAssQuestions(ass.questions.map((q: any) => ({
-                            codeTaskPrompt: q.code_task_prompt,
-                            reasoningPrompt: q.reasoning_prompt,
-                            reasoningType: q.reasoning_type,
-                            options: q.options || [],
-                            timerSeconds: q.timer_seconds
-                          })));
+                             codeTaskPrompt: q.code_task_prompt,
+                             reasoningPrompt: q.reasoning_prompt,
+                             reasoningType: q.reasoning_type,
+                             options: q.options || [],
+                             optionsText: (q.options || []).join(', '),
+                             timerSeconds: q.timer_seconds
+                           })));
 
                           setLoadingAssSubs(true);
                           setSelectedAssSub(null);
@@ -1797,7 +1805,7 @@ export default function InstructorDashboard() {
                                   }}
                                   className="text-xs font-bold text-violet-400 hover:text-violet-300 underline truncate block text-left w-full"
                                 >
-                                  {sub.studentName}
+                                  {sub.studentName} (Q{sub.questionIndex !== undefined ? sub.questionIndex + 1 : '?'})
                                 </button>
                                 <div className="text-[9px] font-mono mt-0.5">{sub.studentRollNumber}</div>
                               </div>

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS Users (
     phone VARCHAR(50),
     password_hash VARCHAR(255) NOT NULL,
     session_token VARCHAR(255),
+    branch VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

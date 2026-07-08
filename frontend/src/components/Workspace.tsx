@@ -638,14 +638,23 @@ export default function Workspace() {
             const assData = await assRes.json();
             const ass = assData.assignments.find((a: any) => a.id === assignmentId);
             if (ass) {
+              ass.questions = (ass.questions || []).map((q: any) => ({
+                id: q.id,
+                codeTaskPrompt: q.code_task_prompt !== undefined ? q.code_task_prompt : q.codeTaskPrompt,
+                reasoningPrompt: q.reasoning_prompt !== undefined ? q.reasoning_prompt : q.reasoningPrompt,
+                reasoningType: q.reasoning_type !== undefined ? q.reasoning_type : q.reasoningType,
+                options: Array.isArray(q.options) ? q.options : (typeof q.options === 'string' ? JSON.parse(q.options || '[]') : q.options || []),
+                timerSeconds: q.timer_seconds !== undefined ? q.timer_seconds : q.timerSeconds
+              }));
+
               setActiveAssignment(ass);
               const startIdx = ass.submittedQuestionIds.length;
               setCurrentQuestionIndex(startIdx);
               const activeQ = ass.questions[startIdx];
               if (activeQ) {
                 setActiveQuestion(activeQ);
-                if (activeQ.timer_seconds) {
-                  setTestTimeLeft(activeQ.timer_seconds);
+                if (activeQ.timerSeconds) {
+                  setTestTimeLeft(activeQ.timerSeconds);
                 } else {
                   setTestTimeLeft(999999); // Untimed sentinel
                 }
@@ -1459,8 +1468,8 @@ export default function Workspace() {
         if (!isCompleted) {
           const nextQ = activeAssignment.questions[nextIdx];
           setActiveQuestion(nextQ);
-          if (nextQ.timer_seconds) {
-            setTestTimeLeft(nextQ.timer_seconds);
+          if (nextQ.timerSeconds) {
+            setTestTimeLeft(nextQ.timerSeconds);
           } else {
             setTestTimeLeft(999999);
           }
@@ -2785,12 +2794,14 @@ export default function Workspace() {
                             )}
                           </div>
 
-                          <div>
-                            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Coding Challenge</h3>
-                            <p className="text-sm text-slate-200 leading-relaxed bg-slate-950 p-4 border border-slate-800 rounded-lg">
-                              {activeQuestion!.codeTaskPrompt}
-                            </p>
-                          </div>
+                          {activeQuestion!.codeTaskPrompt && (
+                            <div>
+                              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Coding Challenge</h3>
+                              <p className="text-sm text-slate-200 leading-relaxed bg-slate-950 p-4 border border-slate-800 rounded-lg">
+                                {activeQuestion!.codeTaskPrompt}
+                              </p>
+                            </div>
+                          )}
 
                           <div>
                             <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Reasoning Prompt</h3>
@@ -2864,8 +2875,20 @@ export default function Workspace() {
                           </div>
                         </>
                       ) : (
-                        <div className="text-center text-slate-500 py-10 text-sm italic">
-                          No active test questions selected.
+                        <div className="text-center text-slate-400 py-10 text-sm flex flex-col items-center gap-4 bg-slate-950/40 p-6 border border-slate-850 rounded-xl">
+                          <CheckCircle className="w-10 h-10 text-emerald-500 animate-pulse" />
+                          <div>
+                            <h4 className="font-bold text-slate-200 text-sm">Assignment Completed!</h4>
+                            <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                              You have successfully submitted answers for all questions. You can review your workspace code or return to the dashboard.
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => window.location.href = '/dashboard'}
+                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-colors"
+                          >
+                            Return to Dashboard
+                          </button>
                         </div>
                       )}
                     </div>
@@ -2892,15 +2915,17 @@ export default function Workspace() {
                 </div>
 
                 {/* Submit Action Block */}
-                <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0">
-                  <button
-                    onClick={handleSubmitSolution}
-                    className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-violet-500/20 flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98]"
-                  >
-                    <Send className="w-4 h-4" />
-                    <span>{mode === 'test' ? 'Submit Question Answer' : mode === 'assignment' ? 'Submit Assignment Question' : 'Submit Solution Code'}</span>
-                  </button>
-                </div>
+                {activeQuestion && (
+                  <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0">
+                    <button
+                      onClick={handleSubmitSolution}
+                      className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-violet-500/20 flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98]"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>{mode === 'test' ? 'Submit Question Answer' : mode === 'assignment' ? 'Submit Assignment Question' : 'Submit Solution Code'}</span>
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </div>

@@ -20,6 +20,7 @@ export default function AuthPage() {
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [branch, setBranch] = useState('CSE');
   
   // OTP Verification Inputs
   const [otpCode, setOtpCode] = useState('');
@@ -50,7 +51,7 @@ export default function AuthPage() {
       const res = await fetch(`${backendUrl}/api/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, rollNumber, email, phone, password }),
+        body: JSON.stringify({ name, rollNumber, email, phone, password, branch }),
       });
 
       const data = await res.json();
@@ -295,6 +296,21 @@ export default function AuthPage() {
                 placeholder="+91 99999 99999"
                 className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 focus:outline-none focus:border-violet-500 transition-colors"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 uppercase mb-1.5">Academic Branch *</label>
+              <select
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                className="w-full px-4 py-2.5 bg-slate-955/60 border border-slate-800 rounded-lg text-slate-202 focus:outline-none focus:border-violet-500 transition-colors"
+              >
+                <option value="CSE" className="bg-slate-955 text-slate-200">Computer Science & Engineering (CSE)</option>
+                <option value="BCA" className="bg-slate-955 text-slate-200">Bachelor of Computer Applications (BCA)</option>
+                <option value="MCA" className="bg-slate-955 text-slate-200">Master of Computer Applications (MCA)</option>
+                <option value="IT" className="bg-slate-955 text-slate-200">Information Technology (IT)</option>
+                <option value="ECE" className="bg-slate-955 text-slate-200">Electronics & Communication (ECE)</option>
+              </select>
             </div>
 
             <div>

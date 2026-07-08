@@ -258,7 +258,7 @@ app.get('/health', (req, res) => {
 // 1. Student Registration & OTP generation
 app.post('/api/register', async (req, res) => {
   try {
-    const { name, rollNumber, email, phone, password } = req.body;
+    const { name, rollNumber, email, phone, password, branch } = req.body;
     if (!name || !rollNumber || !email || !password) {
       return res.status(400).json({ error: 'Name, Roll Number, Email, and Password are required.' });
     }
@@ -275,9 +275,9 @@ app.post('/api/register', async (req, res) => {
 
     // Save temporary User record (unverified)
     const userRes = await query(
-      `INSERT INTO Users (name, roll_number, email, phone, password_hash, email_verified) 
-       VALUES ($1, $2, $3, $4, $5, false) RETURNING id`,
-      [name, rollNumber, email, phone, passwordHash]
+      `INSERT INTO Users (name, roll_number, email, phone, password_hash, email_verified, branch) 
+       VALUES ($1, $2, $3, $4, $5, false, $6) RETURNING id`,
+      [name, rollNumber, email, phone, passwordHash, branch || null]
     );
 
     // Save OTP Request
@@ -317,7 +317,7 @@ app.post('/api/register', async (req, res) => {
         ? 'Registration successful. OTP sent to your email.' 
         : 'Registration successful. OTP generated (check console).',
       email,
-      testOtpCode: otpCode // Exposing OTP in response for simplified testing environment
+      testOtpCode: emailSent ? null : otpCode // Exposing OTP in response only if email dispatch was skipped/failed
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1123,11 +1123,12 @@ app.get('/api/admin/assignments/:id/submissions', async (req, res) => {
 
     const { id } = req.params;
     const subsQuery = await query(
-      `SELECT s.*, u.name as "studentName", u.roll_number as "studentRollNumber"
+      `SELECT s.*, u.name as "studentName", u.roll_number as "studentRollNumber", q.question_index as "questionIndex"
        FROM AssignmentSubmissions s
        JOIN Users u ON s.student_id = u.id
+       JOIN AssignmentQuestions q ON s.question_id = q.id
        WHERE s.assignment_id = $1
-       ORDER BY s.submitted_at DESC`,
+       ORDER BY s.submitted_at DESC, q.question_index ASC`,
       [id]
     );
 
