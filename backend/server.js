@@ -56,6 +56,37 @@ app.use((req, res, next) => {
   next();
 });
 
+// Custom In-Memory Rate Limiter Middleware
+const rateLimitStore = {};
+const createRateLimiter = (options) => {
+  return (req, res, next) => {
+    const ip = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+    const now = Date.now();
+    
+    if (!rateLimitStore[ip]) {
+      rateLimitStore[ip] = [];
+    }
+    
+    // Clean old requests outside windowMs
+    rateLimitStore[ip] = rateLimitStore[ip].filter(timestamp => now - timestamp < options.windowMs);
+    
+    if (rateLimitStore[ip].length >= options.max) {
+      console.warn(`[SECURITY] Rate limit exceeded for IP: ${ip} on route: ${req.originalUrl}`);
+      return res.status(429).json({ error: options.message || 'Too many requests. Please try again later.' });
+    }
+    
+    rateLimitStore[ip].push(now);
+    next();
+  };
+};
+
+const authRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000, // 1 minute window
+  max: 5, // max 5 attempts per minute
+  message: 'Too many authentication attempts. Please try again after 60 seconds.'
+});
+
+
 // Helper: Validate session token and check expiry (24-hour window)
 const validateSession = async (sessionToken) => {
   if (!sessionToken) return { authenticated: false, error: 'Authorization header token required.' };
@@ -256,11 +287,25 @@ app.get('/health', (req, res) => {
 });
 
 // 1. Student Registration & OTP generation
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authRateLimiter, async (req, res) => {
   try {
     const { name, rollNumber, email, phone, password, branch } = req.body;
     if (!name || !rollNumber || !email || !password) {
       return res.status(400).json({ error: 'Name, Roll Number, Email, and Password are required.' });
+    }
+
+    // Server-side Form Validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    if (!rollNumber.trim()) {
+      return res.status(400).json({ error: 'Roll number cannot be empty.' });
     }
 
     // Check if user already exists
@@ -325,7 +370,7 @@ app.post('/api/register', async (req, res) => {
 });
 
 // 2. Verify OTP & Mark email verified
-app.post('/api/verify-otp', async (req, res) => {
+app.post('/api/verify-otp', authRateLimiter, async (req, res) => {
   try {
     const { email, otpCode } = req.body;
     if (!email || !otpCode) {
@@ -372,11 +417,16 @@ app.post('/api/verify-otp', async (req, res) => {
 });
 
 // 3. User Login
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authRateLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
 
     const userQuery = await query('SELECT * FROM Users WHERE email = $1', [email]);
