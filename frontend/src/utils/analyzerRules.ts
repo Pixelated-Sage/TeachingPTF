@@ -62,11 +62,22 @@ export function registerTabSwitch(
 export function registerPasteBlock(
   selector: string,
   ctx: AnalyzerContext,
-  onPasteAttempt: () => void
+  onPasteAttempt: () => boolean | void
 ) {
   const handlePaste = (e: Event) => {
+    const target = e.target as HTMLElement;
+    // Only intercept if the target matches our specified selector
+    if (target && typeof target.matches === 'function' && !target.matches(selector)) {
+      return;
+    }
+
+    // Call the application callback to check if paste is currently blocked
+    const shouldBlock = onPasteAttempt();
+    if (shouldBlock === false) return; // Paste is currently allowed
+
     e.preventDefault();
-    onPasteAttempt();
+    e.stopPropagation(); // Immediately stop propagation so Monaco editor cannot bypass it
+    
     alert('Pasting content is explicitly disabled during this session.');
     
     if (ctx.socket?.connected && ctx.studentId && ctx.classroomId) {
@@ -79,25 +90,12 @@ export function registerPasteBlock(
     }
   };
 
-  const bindEvents = () => {
-    const elements = document.querySelectorAll(selector);
-    elements.forEach(el => {
-      el.removeEventListener('paste', handlePaste);
-      el.addEventListener('paste', handlePaste);
-    });
-  };
-
-  // Run immediately and setup a mutation observer to bind to future inputs
-  bindEvents();
-  const observer = new MutationObserver(bindEvents);
-  observer.observe(document.body, { childList: true, subtree: true });
+  // Use 'true' for capture phase to intercept the event as it travels DOWN the DOM tree,
+  // before the Monaco Editor's internal listeners (which use stopPropagation) can hide it.
+  window.addEventListener('paste', handlePaste, true);
 
   return () => {
-    observer.disconnect();
-    const elements = document.querySelectorAll(selector);
-    elements.forEach(el => {
-      el.removeEventListener('paste', handlePaste);
-    });
+    window.removeEventListener('paste', handlePaste, true);
   };
 }
 

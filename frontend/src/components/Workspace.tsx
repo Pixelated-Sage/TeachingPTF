@@ -487,13 +487,15 @@ export default function Workspace() {
 
     // 2. Intercept copy-paste events on editor and all typed reasoning questions inputs
     const cleanupPasteBlock = registerPasteBlock('textarea, input[type="text"], .inputarea', ctx, () => {
-      if (!pasteBlocked) return;
+      if (!pasteBlocked) return false; // Let the paste through!
+
       setPasteAttemptCount(prev => prev + 1);
       pendingMishapsRef.current.push({
         type: 'paste_attempt',
         timestamp: Date.now(),
         isTest: mode === 'test'
       });
+      return true; // Block the paste!
     });
 
     // 3. Monitor student inactivity timeouts (2 minutes threshold)
