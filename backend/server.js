@@ -96,9 +96,26 @@ const authRateLimiter = createRateLimiter({
 });
 
 
+// In-memory session validation caches (plain Map)
+// Session tokens are cached mapping token -> { user/admin object, expiresAt }
+// Prevents high-frequency DB queries on every REST request.
+const sessionCache = new Map();
+const adminSessionCache = new Map();
+
 // Helper: Validate session token and check expiry (24-hour window)
 const validateSession = async (sessionToken) => {
   if (!sessionToken) return { authenticated: false, error: 'Authorization header token required.' };
+  
+  // 1. Check in-memory cache first
+  const cached = sessionCache.get(sessionToken);
+  if (cached) {
+    if (new Date() > new Date(cached.expiresAt)) {
+      sessionCache.delete(sessionToken);
+      return { authenticated: false, error: 'Session token has expired. Please log in again.' };
+    }
+    return { authenticated: true, user: cached.user };
+  }
+
   try {
     const userQuery = await query('SELECT * FROM Users WHERE session_token = $1', [sessionToken]);
     if (userQuery.rows.length === 0) return { authenticated: false, error: 'Invalid or expired session token.' };
@@ -106,6 +123,12 @@ const validateSession = async (sessionToken) => {
     if (user.token_expires_at && new Date() > new Date(user.token_expires_at)) {
       return { authenticated: false, error: 'Session token has expired. Please log in again.' };
     }
+    
+    // Populate session cache
+    if (user.token_expires_at) {
+      sessionCache.set(sessionToken, { user, expiresAt: user.token_expires_at });
+    }
+    
     return { authenticated: true, user };
   } catch (err) {
     return { authenticated: false, error: 'Internal session authentication check error.' };
@@ -115,6 +138,17 @@ const validateSession = async (sessionToken) => {
 // Helper: Validate instructor session token and check expiry (24-hour window)
 const validateAdminSession = async (sessionToken) => {
   if (!sessionToken) return { authenticated: false, error: 'Admin authorization header token required.' };
+
+  // 1. Check in-memory cache first
+  const cached = adminSessionCache.get(sessionToken);
+  if (cached) {
+    if (new Date() > new Date(cached.expiresAt)) {
+      adminSessionCache.delete(sessionToken);
+      return { authenticated: false, error: 'Admin session token has expired. Please log in again.' };
+    }
+    return { authenticated: true, admin: cached.admin };
+  }
+
   try {
     const adminQuery = await query('SELECT * FROM Instructors WHERE session_token = $1', [sessionToken]);
     if (adminQuery.rows.length === 0) return { authenticated: false, error: 'Invalid or expired admin session token.' };
@@ -122,6 +156,12 @@ const validateAdminSession = async (sessionToken) => {
     if (admin.token_expires_at && new Date() > new Date(admin.token_expires_at)) {
       return { authenticated: false, error: 'Admin session token has expired. Please log in again.' };
     }
+
+    // Populate admin cache
+    if (admin.token_expires_at) {
+      adminSessionCache.set(sessionToken, { admin, expiresAt: admin.token_expires_at });
+    }
+
     return { authenticated: true, admin };
   } catch (err) {
     return { authenticated: false, error: 'Internal admin session check error.' };
@@ -148,7 +188,61 @@ const io = new Server(server, {
   }
 });
 
-const activeSocketMappings = {}; // socket.id -> { studentId, classroomId }
+// Global socket mappings: socket.id -> { studentId, classroomId }
+const activeSocketMappings = {};
+
+// Global In-memory mishap aggregate tracking (real-time observation updates)
+// Structure: { classroomId: { studentId: { tab_switch, inactivity, paste_attempt, lastEventAt } } }
+const mishapAggregates = new Map();
+
+// Global Write buffer for mishap inserts to DB
+let mishapWriteBuffer = [];
+
+// Flush mishap logs from memory buffer to PostgreSQL every 4 seconds
+setInterval(async () => {
+  if (mishapWriteBuffer.length === 0) return;
+  
+  const currentBuffer = mishapWriteBuffer;
+  mishapWriteBuffer = [];
+  
+  console.log(`[BATCH-WRITE] Flushing ${currentBuffer.length} mishap logs to PostgreSQL...`);
+  
+  try {
+    const values = [];
+    const placeholders = [];
+    let idx = 1;
+    currentBuffer.forEach(m => {
+      placeholders.push(`($${idx}, $${idx+1}, $${idx+2}, $${idx+3}, $${idx+4})`);
+      values.push(m.studentId, m.classroomId, m.type, new Date(m.timestamp), JSON.stringify(m.meta));
+      idx += 5;
+    });
+
+    await query(
+      `INSERT INTO MishapLogs (student_id, classroom_id, type, timestamp, meta) 
+       VALUES ${placeholders.join(', ')}`,
+      values
+    );
+  } catch (err) {
+    console.error('[BATCH-WRITE] Error writing buffered mishap logs:', err.message);
+  }
+}, 4000);
+
+// Helper function to dynamically update mishap aggregates in-memory
+const updateMishapAggregate = (classroomId, studentId, type, timestamp) => {
+  if (!classroomId || !studentId) return;
+  if (!mishapAggregates.has(classroomId)) {
+    mishapAggregates.set(classroomId, new Map());
+  }
+  const classroomMap = mishapAggregates.get(classroomId);
+  if (!classroomMap.has(studentId)) {
+    classroomMap.set(studentId, { tab_switch: 0, inactivity: 0, paste_attempt: 0, lastEventAt: timestamp });
+  }
+  const aggregate = classroomMap.get(studentId);
+  if (type === 'tab_switch') aggregate.tab_switch++;
+  if (type === 'inactivity') aggregate.inactivity++;
+  if (type === 'paste_attempt') aggregate.paste_attempt++;
+  aggregate.lastEventAt = timestamp;
+};
 
   // Event-driven real-time socket listeners
 io.on('connection', (socket) => {
@@ -172,74 +266,94 @@ io.on('connection', (socket) => {
   });
 
   // Mishap event: Tab switch Visibility API hook
-  socket.on('mishap:tab_switch', async (data) => {
+  socket.on('mishap:tab_switch', (data) => {
     try {
       const { studentId, classroomId, timestamp, isTest } = data;
-      console.log(`Mishap [tab_switch] logged for Student: ${studentId} (Test: ${!!isTest})`);
-      await query(
-        `INSERT INTO MishapLogs (student_id, classroom_id, type, timestamp, meta) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [studentId, classroomId, 'tab_switch', new Date(timestamp), JSON.stringify({ isTest })]
-      );
+      console.log(`Mishap [tab_switch] buffered for Student: ${studentId} (Test: ${!!isTest})`);
+      
+      // 1. Update in-memory real-time aggregate for instant admin checks
+      updateMishapAggregate(classroomId, studentId, 'tab_switch', timestamp);
+
+      // 2. Queue in the write buffer for delayed DB logging
+      mishapWriteBuffer.push({
+        studentId,
+        classroomId,
+        type: 'tab_switch',
+        timestamp,
+        meta: { isTest }
+      });
     } catch (err) {
-      console.error('Error logging tab switch mishap:', err.message);
+      console.error('Error buffering tab switch mishap:', err.message);
     }
   });
 
   // Mishap event: Inactivity timeout hook
-  socket.on('mishap:inactivity', async (data) => {
+  socket.on('mishap:inactivity', (data) => {
     try {
       const { studentId, classroomId, timestamp, isTest } = data;
-      console.log(`Mishap [inactivity] logged for Student: ${studentId} (Test: ${!!isTest})`);
-      await query(
-        `INSERT INTO MishapLogs (student_id, classroom_id, type, timestamp, meta) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [studentId, classroomId, 'inactivity', new Date(timestamp), JSON.stringify({ isTest })]
-      );
+      console.log(`Mishap [inactivity] buffered for Student: ${studentId} (Test: ${!!isTest})`);
+      
+      // 1. Update in-memory real-time aggregate for instant admin checks
+      updateMishapAggregate(classroomId, studentId, 'inactivity', timestamp);
+
+      // 2. Queue in the write buffer for delayed DB logging
+      mishapWriteBuffer.push({
+        studentId,
+        classroomId,
+        type: 'inactivity',
+        timestamp,
+        meta: { isTest }
+      });
     } catch (err) {
-      console.error('Error logging inactivity mishap:', err.message);
+      console.error('Error buffering inactivity mishap:', err.message);
     }
   });
 
   // Mishap event: Copy-paste attempt blocked hook
-  socket.on('mishap:paste_attempt', async (data) => {
+  socket.on('mishap:paste_attempt', (data) => {
     try {
       const { studentId, classroomId, timestamp, isTest } = data;
-      console.log(`Mishap [paste_attempt] logged for Student: ${studentId} (Test: ${!!isTest})`);
-      await query(
-        `INSERT INTO MishapLogs (student_id, classroom_id, type, timestamp, meta) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [studentId, classroomId, 'paste_attempt', new Date(timestamp), JSON.stringify({ isTest })]
-      );
+      console.log(`Mishap [paste_attempt] buffered for Student: ${studentId} (Test: ${!!isTest})`);
+      
+      // 1. Update in-memory real-time aggregate for instant admin checks
+      updateMishapAggregate(classroomId, studentId, 'paste_attempt', timestamp);
+
+      // 2. Queue in the write buffer for delayed DB logging
+      mishapWriteBuffer.push({
+        studentId,
+        classroomId,
+        type: 'paste_attempt',
+        timestamp,
+        meta: { isTest }
+      });
     } catch (err) {
-      console.error('Error logging paste mishap:', err.message);
+      console.error('Error buffering paste mishap:', err.message);
     }
   });
 
   // Telemetry batch event handler to avoid database connection spikes
-  socket.on('mishap:batch', async (data) => {
+  socket.on('mishap:batch', (data) => {
     try {
       const { studentId, classroomId, mishaps } = data;
       if (!mishaps || mishaps.length === 0) return;
 
-      console.log(`Mishap [batch] received: ${mishaps.length} logs for Student: ${studentId}`);
+      console.log(`Mishap [batch] buffered: ${mishaps.length} logs for Student: ${studentId}`);
 
-      const values = [];
-      const placeholders = [];
-      let idx = 1;
       mishaps.forEach(m => {
-        placeholders.push(`($${idx}, $${idx+1}, $${idx+2}, $${idx+3}, $${idx+4})`);
-        values.push(studentId, classroomId, m.type, new Date(m.timestamp), JSON.stringify({ isTest: m.isTest }));
-        idx += 5;
-      });
+        // 1. Update in-memory real-time aggregate
+        updateMishapAggregate(classroomId, studentId, m.type, m.timestamp);
 
-      await query(
-        `INSERT INTO MishapLogs (student_id, classroom_id, type, timestamp, meta) 
-         VALUES ${placeholders.join(', ')}`,
-        values
-      );
+        // 2. Queue in the write buffer
+        mishapWriteBuffer.push({
+          studentId,
+          classroomId,
+          type: m.type,
+          timestamp: m.timestamp,
+          meta: { isTest: m.isTest }
+        });
+      });
     } catch (err) {
-      console.error('Error logging batch mishaps:', err.message);
+      console.error('Error buffering batch mishaps:', err.message);
     }
   });
 
@@ -468,6 +582,11 @@ app.post('/api/login', authRateLimiter, async (req, res) => {
     const tokenExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await query('UPDATE Users SET session_token = $1, token_expires_at = $2 WHERE id = $3', [sessionToken, tokenExpiresAt, user.id]);
 
+    // Cache session in memory
+    user.session_token = sessionToken;
+    user.token_expires_at = tokenExpiresAt;
+    sessionCache.set(sessionToken, { user, expiresAt: tokenExpiresAt });
+
     res.json({
       id: user.id,
       name: user.name,
@@ -574,6 +693,11 @@ app.post('/api/classroom/join', async (req, res) => {
   }
 });
 
+// In-memory caches for classroom content, live status, and assignments definitions
+const notesCache = new Map();
+const statusCache = new Map();
+const assignmentsCache = new Map();
+
 // 6. Get Classroom Content (Notes + Questions together in ONE call)
 app.get('/api/classroom/:id/content', async (req, res) => {
   try {
@@ -583,6 +707,12 @@ app.get('/api/classroom/:id/content', async (req, res) => {
     const auth = await validateSession(sessionToken);
     if (!auth.authenticated) {
       return res.status(401).json({ error: auth.error });
+    }
+
+    // Check memory cache first
+    const cached = notesCache.get(classroomId);
+    if (cached) {
+      return res.json(cached);
     }
 
     const notesQuery = await query(
@@ -595,10 +725,13 @@ app.get('/api/classroom/:id/content', async (req, res) => {
       [classroomId]
     );
 
-    res.json({
+    const payload = {
       notes: notesQuery.rows,
       questions: questionsQuery.rows
-    });
+    };
+
+    notesCache.set(classroomId, payload);
+    res.json(payload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -624,11 +757,23 @@ app.get('/api/workspace/:classroomId', async (req, res) => {
     if (workspaceQuery.rows.length === 0) {
       return res.json({ files: null });
     }
-    res.json({ files: workspaceQuery.rows[0].files });
+    
+    const files = workspaceQuery.rows[0].files;
+    
+    // Seed initial cache hash state on load to ensure subsequent identical writes skip DB queries
+    const cacheKey = `${studentId}_${classroomId}`;
+    const initialHash = crypto.createHash('md5').update(JSON.stringify(files)).digest('hex');
+    lastWorkspaceState.set(cacheKey, initialHash);
+
+    res.json({ files });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Global in-memory cache mapping studentId_classroomId to a hash of the files object
+// Skip PostgreSQL updates entirely if the files object has not changed.
+const lastWorkspaceState = new Map();
 
 app.post('/api/workspace/:classroomId', async (req, res) => {
   try {
@@ -646,13 +791,28 @@ app.post('/api/workspace/:classroomId', async (req, res) => {
     }
 
     const studentId = auth.user.id;
+    const stringifiedFiles = JSON.stringify(files);
+    
+    // Hash-based diffing to decide if workspace files actually changed
+    const currentHash = crypto.createHash('md5').update(stringifiedFiles).digest('hex');
+    const cacheKey = `${studentId}_${classroomId}`;
+    
+    if (lastWorkspaceState.get(cacheKey) === currentHash) {
+      // Skip the DB update since content is identical
+      console.log(`[AUTOSAVE] Write skipped for ${cacheKey} (content unchanged).`);
+      return res.json({ success: true, message: 'Workspace autosaved successfully (skipped write - identical).' });
+    }
+
     await query(
       `INSERT INTO StudentWorkspaces (student_id, classroom_id, files, updated_at)
        VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
        ON CONFLICT (student_id, classroom_id)
        DO UPDATE SET files = EXCLUDED.files, updated_at = CURRENT_TIMESTAMP`,
-      [studentId, classroomId, JSON.stringify(files)]
+      [studentId, classroomId, stringifiedFiles]
     );
+
+    // Save the new hash to memory state
+    lastWorkspaceState.set(cacheKey, currentHash);
 
     res.json({ success: true, message: 'Workspace autosaved successfully.' });
   } catch (err) {
@@ -793,6 +953,10 @@ app.post('/api/classroom/:id/go-live', async (req, res) => {
 
     const { id } = req.params;
     await query('UPDATE Classrooms SET live_session_active = true WHERE id = $1', [id]);
+    
+    // Invalidate status cache
+    statusCache.delete(id);
+    
     io.to(id).emit('classroom:live_status', { live: true });
     res.json({ success: true, message: 'Classroom live session started.' });
   } catch (err) {
@@ -807,6 +971,12 @@ app.post('/api/classroom/:id/end-live', async (req, res) => {
 
     const { id } = req.params;
     await query('UPDATE Classrooms SET live_session_active = false WHERE id = $1', [id]);
+    
+    // Clear caches to prevent memory build-up over long uptimes
+    statusCache.delete(id);
+    notesCache.delete(id);
+    mishapAggregates.delete(id);
+    
     io.to(id).emit('classroom:live_status', { live: false });
     res.json({ success: true, message: 'Classroom live session ended.' });
   } catch (err) {
@@ -831,6 +1001,9 @@ app.post('/api/classroom/:id/test', async (req, res) => {
     );
     const newTest = insertQuery.rows[0];
     
+    // Invalidate status cache
+    statusCache.delete(id);
+    
     io.to(id).emit('classroom:test_status', { active: true, test: newTest });
     res.json({ success: true, test: newTest });
   } catch (err) {
@@ -845,6 +1018,10 @@ app.delete('/api/classroom/:id/test', async (req, res) => {
 
     const { id } = req.params;
     await query("UPDATE Tests SET status = 'ended' WHERE classroom_id = $1 AND status = 'active'", [id]);
+    
+    // Invalidate status cache
+    statusCache.delete(id);
+    
     io.to(id).emit('classroom:test_status', { active: false });
     res.json({ success: true, message: 'Test instance ended.' });
   } catch (err) {
@@ -885,13 +1062,23 @@ app.post('/api/classroom/:id/quick-question', async (req, res) => {
 app.get('/api/classroom/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Check status memory cache first
+    const cached = statusCache.get(id);
+    if (cached) {
+      return res.json(cached);
+    }
+
     const classroomQuery = await query('SELECT live_session_active FROM Classrooms WHERE id = $1', [id]);
     const activeTestQuery = await query("SELECT * FROM Tests WHERE classroom_id = $1 AND status = 'active'", [id]);
     
-    res.json({
+    const payload = {
       liveSessionActive: classroomQuery.rows[0]?.live_session_active || false,
       activeTest: activeTestQuery.rows[0] || null
-    });
+    };
+
+    statusCache.set(id, payload);
+    res.json(payload);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -919,6 +1106,11 @@ app.post('/api/admin/login', async (req, res) => {
     const sessionToken = 'admin_token_' + crypto.randomBytes(16).toString('hex');
     const tokenExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await query('UPDATE Instructors SET session_token = $1, token_expires_at = $2 WHERE id = $3', [sessionToken, tokenExpiresAt, admin.id]);
+
+    // Cache admin session in memory
+    admin.session_token = sessionToken;
+    admin.token_expires_at = tokenExpiresAt;
+    adminSessionCache.set(sessionToken, { admin, expiresAt: tokenExpiresAt });
 
     res.json({
       email: admin.email,
@@ -1025,8 +1217,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
 
     const { id } = req.params;
 
-    // Single SQL query that aggregates all 5 data sets into one response object.
-    // Each subquery runs in the same transaction context, using just 1 DB connection.
+    // Single SQL query that aggregates data sets into one response object.
     const result = await query(`
       SELECT
         -- 1. Roster: all enrolled students
@@ -1043,7 +1234,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
           WHERE uc.classroom_id = $1
         ), '[]'::json) AS roster,
 
-        -- 2. Mishaps: all behavior events for this classroom
+        -- 2. Mishaps: fall back to DB only if cache is completely cold/empty
         COALESCE((
           SELECT json_agg(json_build_object(
             'id',                  ml.id,
@@ -1056,7 +1247,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
           FROM MishapLogs ml
           INNER JOIN Users u ON u.id = ml.student_id
           WHERE ml.classroom_id = $1
-        ), '[]'::json) AS mishaps,
+        ), '[]'::json) AS db_mishaps,
 
         -- 3. Quick Questions: topic-number-gated questions (QQ epoch >= 1000000)
         COALESCE((
@@ -1119,10 +1310,65 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
     }
 
     const row = result.rows[0];
+    const roster = row.roster || [];
+    let classroomMishaps = [];
+
+    // Seed mishapAggregates if cold/empty
+    if (!mishapAggregates.has(id)) {
+      mishapAggregates.set(id, new Map());
+      const dbMishaps = row.db_mishaps || [];
+      // Populate memory cache from DB rows (re-seed)
+      dbMishaps.forEach(m => {
+        // Find user matching roll number to get studentId
+        const student = roster.find(r => r.rollNumber === m.studentRollNumber);
+        if (student) {
+          updateMishapAggregate(id, student.id, m.type, m.timestamp);
+        }
+      });
+    }
+
+    // Read real-time mishaps from in-memory aggregate map instead of querying DB
+    const classroomMap = mishapAggregates.get(id);
+    if (classroomMap) {
+      for (const [studentId, agg] of classroomMap.entries()) {
+        const student = roster.find(r => r.id === studentId);
+        if (student) {
+          // Re-serialize into response payload shapes expected by Observation Cards UI
+          if (agg.tab_switch > 0) {
+            classroomMishaps.push({
+              type: 'tab_switch',
+              timestamp: agg.lastEventAt,
+              studentName: student.name,
+              studentRollNumber: student.rollNumber,
+              meta: { count: agg.tab_switch }
+            });
+          }
+          if (agg.inactivity > 0) {
+            classroomMishaps.push({
+              type: 'inactivity',
+              timestamp: agg.lastEventAt,
+              studentName: student.name,
+              studentRollNumber: student.rollNumber,
+              meta: { count: agg.inactivity }
+            });
+          }
+          if (agg.paste_attempt > 0) {
+            classroomMishaps.push({
+              type: 'paste_attempt',
+              timestamp: agg.lastEventAt,
+              studentName: student.name,
+              studentRollNumber: student.rollNumber,
+              meta: { count: agg.paste_attempt }
+            });
+          }
+        }
+      }
+    }
+
     res.json({
-      roster:         row.roster         || [],
+      roster,
       activeStudentIds,
-      mishaps:        row.mishaps        || [],
+      mishaps:        classroomMishaps,
       quickQuestions: row.quickQuestions || [],
       assignments:    row.assignments    || [],
       notes:          row.notes          || []
@@ -1324,6 +1570,9 @@ app.post('/api/admin/classroom/:classroomId/assignments', async (req, res) => {
     );
     assignment.questions = updatedQs.rows;
 
+    // Invalidate assignments definitions cache
+    assignmentsCache.delete(assignment.id);
+
     io.to(classroomId).emit('classroom:assignments_updated');
     res.json({ success: true, assignment });
   } catch (err) {
@@ -1383,11 +1632,17 @@ app.get('/api/assignments', async (req, res) => {
     });
 
     for (const a of targeted) {
-      const questions = await query(
-        'SELECT * FROM AssignmentQuestions WHERE assignment_id = $1 ORDER BY question_index ASC',
-        [a.id]
-      );
-      a.questions = questions.rows;
+      // Check assignments memory cache first for the questions list
+      let questions = assignmentsCache.get(a.id);
+      if (!questions) {
+        const qQuery = await query(
+          'SELECT * FROM AssignmentQuestions WHERE assignment_id = $1 ORDER BY question_index ASC',
+          [a.id]
+        );
+        questions = qQuery.rows;
+        assignmentsCache.set(a.id, questions);
+      }
+      a.questions = questions;
 
       const subsQuery = await query(
         'SELECT question_id FROM AssignmentSubmissions WHERE assignment_id = $1 AND student_id = $2',
@@ -1479,6 +1734,9 @@ app.post('/api/admin/notes', async (req, res) => {
           markdown_content = EXCLUDED.markdown_content,
           headings_manifest = EXCLUDED.headings_manifest
     `, [classroomId, topicNumber, title, markdownContent, JSON.stringify(headingsManifest)]);
+
+    // Invalidate notes cache
+    notesCache.delete(classroomId);
 
     io.to(classroomId).emit('classroom:notes_updated', {
       topicNumber,
