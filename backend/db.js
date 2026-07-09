@@ -13,6 +13,12 @@ if (!connectionString) {
 
 const pool = new Pool({
   connectionString,
+  // Explicit pool sizing to prevent connection exhaustion on Supabase (max ~25 connections).
+  // With 10 max connections per process, a single PM2 cluster of 2 instances uses at most 20
+  // connections, leaving 5 for admin tooling and migrations.
+  max: 10,
+  idleTimeoutMillis: 30000,     // release idle connections after 30s
+  connectionTimeoutMillis: 5000 // fail fast if pool is exhausted (5s timeout)
 });
 
 pool.on('connect', () => {

@@ -113,6 +113,8 @@ export default function InstructorDashboard() {
   const [quickQuestions, setQuickQuestions] = useState<QuickQuestion[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Prevents double-clicks on the Go Live / End Live button from firing multiple API calls
+  const [isTogglingLive, setIsTogglingLive] = useState(false);
 
   // Scoped QQ Submissions Review State
   const [selectedQQ, setSelectedQQ] = useState<QuickQuestion | null>(null);
@@ -227,64 +229,33 @@ export default function InstructorDashboard() {
     }
   }, [adminToken]);
 
-  // Fetch Classroom Scoped Data (Roster, Connection status, Mishaps, Quick Questions)
+  // Fetch Classroom Scoped Data — uses the single batch endpoint to get all data in ONE request
   const fetchClassroomDetails = async () => {
     if (!adminToken || !selectedClassroom) return;
     setLoading(true);
     setError('');
     try {
-      // 1. Fetch Roster
-      const rosterRes = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/roster`, {
+      const res = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/details`, {
         headers: { 'Authorization': adminToken }
       });
-      if (rosterRes.status === 401) {
+      if (res.status === 401) {
         handleLogout();
         throw new Error('Session expired. Please sign in again.');
       }
-      if (!rosterRes.ok) throw new Error('Failed to load student roster');
-      const rosterData = await rosterRes.json();
+      if (!res.ok) throw new Error('Failed to load classroom details');
+      const data = await res.json();
 
-      // 2. Fetch Active Sockets/IDs
-      const activeRes = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/active-student-ids`, {
-        headers: { 'Authorization': adminToken }
-      });
-      const activeData = activeRes.ok ? await activeRes.json() : { activeStudentIds: [] };
-      
-      setActiveStudentIds(activeData.activeStudentIds);
+      setActiveStudentIds(data.activeStudentIds);
 
       // Map connection status to roster
-      const updatedRoster = rosterData.roster.map((s: Student) => ({
+      const updatedRoster = data.roster.map((s: Student) => ({
         ...s,
-        connected: activeData.activeStudentIds.includes(s.id)
+        connected: data.activeStudentIds.includes(s.id)
       }));
-
       setRoster(updatedRoster);
-
-      // 3. Fetch Mishap logs
-      const mishapRes = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/mishaps`, {
-        headers: { 'Authorization': adminToken }
-      });
-      if (!mishapRes.ok) throw new Error('Failed to load mishap logs');
-      const mishapData = await mishapRes.json();
-      setMishaps(mishapData.mishaps);
-
-      // 4. Fetch Quick Questions
-      const qqRes = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/quick-questions`, {
-        headers: { 'Authorization': adminToken }
-      });
-      if (qqRes.ok) {
-        const qqData = await qqRes.json();
-        setQuickQuestions(qqData.quickQuestions);
-      }
-
-      // 5. Fetch Assignments
-      const assignmentsRes = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/assignments`, {
-        headers: { 'Authorization': adminToken }
-      });
-      if (assignmentsRes.ok) {
-        const assignmentsData = await assignmentsRes.json();
-        setAssignments(assignmentsData.assignments || []);
-      }
+      setMishaps(data.mishaps);
+      setQuickQuestions(data.quickQuestions);
+      setAssignments(data.assignments || []);
     } catch (err: any) {
       setError(err.message || 'Error loading control center data.');
     } finally {
@@ -404,6 +375,9 @@ export default function InstructorDashboard() {
   // Classroom Live toggler (Go Live / End Live)
   const handleToggleLive = async (goLive: boolean) => {
     if (!selectedClassroom || !adminToken) return;
+    // Prevent double-click: ignore if a toggle is already in flight
+    if (isTogglingLive) return;
+    setIsTogglingLive(true);
     const endpoint = goLive ? 'go-live' : 'end-live';
     try {
       const res = await fetch(`${backendUrl}/api/classroom/${selectedClassroom.id}/${endpoint}`, {
@@ -412,11 +386,13 @@ export default function InstructorDashboard() {
       });
       if (!res.ok) throw new Error('Failed to toggle live session status');
       
-      // Update selected classroom and refresh
+      // Update selected classroom state in place (no need to refetch entire classrooms list)
       setSelectedClassroom(prev => prev ? { ...prev, live_session_active: goLive } : null);
-      fetchClassrooms();
+      setClassrooms(prev => prev.map(c => c.id === selectedClassroom.id ? { ...c, live_session_active: goLive } : c));
     } catch (err: any) {
       alert(err.message);
+    } finally {
+      setIsTogglingLive(false);
     }
   };
 

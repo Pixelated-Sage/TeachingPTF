@@ -277,6 +277,9 @@ export default function Workspace() {
   const [notesLoading, setNotesLoading] = useState<boolean>(false);
   const contentFetchedRef = useRef<boolean>(false);
   const activeHeadingRef = useRef<{ title: string; index: number; enteredAt: number } | null>(null);
+  // Submission deduplication refs: prevent multi-click duplicate submissions
+  const isSubmittingRef = useRef<boolean>(false);
+  const isSubmittingQQRef = useRef<boolean>(false);
 
   // Dynamic Multiple Terminals State
   const [terminalTabs, setTerminalTabs] = useState<{ id: string; label: string }[]>([
@@ -294,7 +297,7 @@ export default function Workspace() {
   const webcontainerRef = useRef<WebContainer | null>(null);
   const headingObserverRef = useRef<IntersectionObserver | null>(null);
 
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
+  const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
 
   // 1. Verify Authentication & Load Student details
   useEffect(() => {
@@ -308,7 +311,9 @@ export default function Workspace() {
     setStartTime(Date.now());
   }, [router, classroomId]);
 
-  // 2. Fetch classroom Live/Test active status & bootstrap configuration
+  // 2. Fetch classroom Live/Test active status (ONE-TIME on mount only)
+  // After this initial fetch, live status updates arrive via the 'classroom:live_status' socket event.
+  // We do NOT poll repeatedly — this eliminates the continuous 5-second API hit flood.
   useEffect(() => {
     if (!student || !classroomId) return;
 
@@ -329,45 +334,60 @@ export default function Workspace() {
       }
     };
 
-    getStatus();
-    const interval = setInterval(getStatus, 5000); // 5-second interval pings to check REST API connection
-    return () => clearInterval(interval);
+    getStatus(); // Single fetch on mount — no recurring interval
   }, [student, classroomId]);
 
-  // 3. Connect Socket.io client conditionally based on mode and session activation status
+  // 3. Connect Socket.io client unconditionally on classroom entry
+  // Socket is ALWAYS connected so students receive live_status, quick_question, and notes_updated
+  // events regardless of current live state. Features are gated by liveSessionActive state.
+  //
+  // HORIZONTAL SCALING NOTE:
+  // This single-process setup (PM2 single instance + Cloudflare Tunnel) works without Redis.
+  // When scaling to multiple Node.js processes, add the @socket.io/redis-adapter package and
+  // point it at a Redis instance so all processes share room state.
+  // See: https://socket.io/docs/v4/redis-adapter/
   useEffect(() => {
     if (!student || !classroomId) return;
-    
-    const isTestMode = mode === 'test';
-    const isAssignmentMode = mode === 'assignment';
-    const shouldConnect = isTestMode || isAssignmentMode || liveSessionActive;
 
-    if (!shouldConnect) {
-      if (socketInstance.current) {
-        socketInstance.current.disconnect();
-        socketInstance.current = null;
-        setSocketConnected(false);
-      }
-      return;
-    }
-
+    // Only create one socket connection — skip if already connected
     if (socketInstance.current) return;
 
-    const socket = io(backendUrl);
+    const socket = io(backendUrl, {
+      // Reconnection with exponential backoff prevents a "thundering herd" after server restart.
+      // Without this, all 60 students reconnect simultaneously the moment the server comes back.
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,        // start at 1s
+      reconnectionDelayMax: 30000,    // cap at 30s (Socket.io doubles each attempt)
+      randomizationFactor: 0.5,       // add ±50% jitter so clients don't sync up
+    });
     socketInstance.current = socket;
 
     socket.on('connect', () => {
       console.log('Socket.io connected:', socket.id);
       setSocketConnected(true);
+      // Re-join room on every connect event (covers initial connect + all reconnects).
+      // This is required because Socket.io rooms are in-memory: if the server restarts
+      // or you hit a different process, the client is no longer in the room.
       socket.emit('room:join', { classroomId, studentId: student.id });
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
       setSocketConnected(false);
+      // If network drops while a submission is in flight, the isSubmitting ref may be stuck true.
+      // Reset it on disconnect so the button re-enables and the student can retry.
+      isSubmittingRef.current = false;
+      isSubmittingQQRef.current = false;
+      console.warn('[Socket] Disconnected:', reason);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.warn('[Socket] Connection error (will retry):', err.message);
     });
 
     socket.on('classroom:live_status', (data: { live: boolean }) => {
       setLiveSessionActive(data.live);
+      console.log(`[Live Status] Class is now ${data.live ? 'LIVE' : 'OFFLINE'}`);
     });
 
     socket.on('classroom:test_status', (data: { active: boolean; test?: any }) => {
@@ -461,7 +481,8 @@ export default function Workspace() {
       socketInstance.current = null;
       setSocketConnected(false);
     };
-  }, [student, classroomId, liveSessionActive, mode]);
+  }, [student, classroomId, mode]);
+
 
   // 4. Centralized telemetry rules registration
   useEffect(() => {
@@ -1405,6 +1426,12 @@ export default function Workspace() {
   // Submit Solution (Live / Test branch handled on backend)
   const handleSubmitSolution = async () => {
     if (!student || !activeQuestion || !classroomId) return;
+    // Client-side dedup guard: prevent multiple concurrent submissions from rapid clicks
+    if (isSubmittingRef.current) {
+      console.warn('[DEDUP] Submit already in progress, ignoring duplicate click.');
+      return;
+    }
+    isSubmittingRef.current = true;
 
     // Flush any pending batch mishaps before submitting solution
     if (socketInstance.current?.connected && pendingMishapsRef.current.length > 0) {
@@ -1502,12 +1529,20 @@ export default function Workspace() {
       }
     } catch (err: any) {
       alert(`Error submitting solution: ${err.message}`);
+    } finally {
+      isSubmittingRef.current = false;
     }
   };
 
   // Submit Quick Question pop-quiz answers specifically
   const handleSubmitQuickQuestion = async () => {
     if (!student || !quickQuestionId || !classroomId) return;
+    // Client-side dedup guard: prevent double-submission on rapid clicks or auto-submit + manual submit race
+    if (isSubmittingQQRef.current) {
+      console.warn('[DEDUP] QQ submit already in progress, ignoring duplicate.');
+      return;
+    }
+    isSubmittingQQRef.current = true;
 
     // Flush any pending batch mishaps before submitting solution
     if (socketInstance.current?.connected && pendingMishapsRef.current.length > 0) {
@@ -1575,6 +1610,7 @@ export default function Workspace() {
       setQuickQuestion(null);
       setQqCode('// Write your JavaScript solution here...');
       setQqReasoning('');
+      isSubmittingQQRef.current = false;
     }
   };
 
@@ -2010,6 +2046,17 @@ export default function Workspace() {
             {mode === 'test' ? 'Classroom Exam Space' : 'Live Classroom Workspace'}
           </span>
           
+          {/* Live Status Badge — shows live/offline state directly in the header */}
+          {mode === 'live' && (
+            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-wider ${
+              liveSessionActive
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : 'bg-slate-800 border-slate-700 text-slate-500'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${liveSessionActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+              <span>{liveSessionActive ? 'Live' : 'Offline'}</span>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-4">
@@ -2745,16 +2792,19 @@ export default function Workspace() {
                     </div>
                   </div>
 
-                  {/* Submit Action Block */}
-                  <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0">
-                    <button
-                      onClick={handleSubmitSolution}
-                      className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-violet-500/20 flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98]"
-                    >
-                      <Send className="w-4 h-4" />
-                      <span>Submit Solution Code</span>
-                    </button>
-                  </div>
+                  {/* Submit Action Block - only show when there is an active question to submit */}
+                  {activeQuestion && (
+                    <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0">
+                      <button
+                        onClick={handleSubmitSolution}
+                        disabled={isSubmittingRef.current}
+                        className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-violet-500/20 flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Send className="w-4 h-4" />
+                        <span>Submit Solution Code</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </>
             ) : (
@@ -2919,7 +2969,8 @@ export default function Workspace() {
                   <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0">
                     <button
                       onClick={handleSubmitSolution}
-                      className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-violet-500/20 flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98]"
+                      disabled={isSubmittingRef.current}
+                      className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium rounded-lg shadow-lg shadow-violet-500/20 flex items-center justify-center gap-2 transition-all duration-200 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Send className="w-4 h-4" />
                       <span>{mode === 'test' ? 'Submit Question Answer' : mode === 'assignment' ? 'Submit Assignment Question' : 'Submit Solution Code'}</span>

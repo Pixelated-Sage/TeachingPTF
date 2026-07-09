@@ -128,9 +128,9 @@ const validateAdminSession = async (sessionToken) => {
   }
 };
 
-// Helper: Hashing password using bcrypt
-const hashPassword = (password) => {
-  return bcrypt.hashSync(password, 10);
+// Helper: Hashing password using bcrypt (async to avoid blocking event loop)
+const hashPassword = async (password) => {
+  return bcrypt.hash(password, 10);
 };
 
 // Socket.io initialization with CORS
@@ -323,7 +323,7 @@ app.post('/api/register', authRateLimiter, async (req, res) => {
       return res.status(400).json({ error: 'User with this email or roll number already registered.' });
     }
 
-    const passwordHash = hashPassword(password);
+    const passwordHash = await hashPassword(password);
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
 
@@ -449,16 +449,17 @@ app.post('/api/login', authRateLimiter, async (req, res) => {
       return res.status(403).json({ error: 'Please verify your email address before logging in.' });
     }
 
-    // SHA-256 to bcrypt auto-migration block
+    // SHA-256 to bcrypt auto-migration block (async to not block event loop)
     const shaHash = crypto.createHash('sha256').update(password).digest('hex');
     if (user.password_hash === shaHash) {
-      const upgradedHash = bcrypt.hashSync(password, 10);
+      const upgradedHash = await bcrypt.hash(password, 10);
       await query('UPDATE Users SET password_hash = $1 WHERE id = $2', [upgradedHash, user.id]);
       user.password_hash = upgradedHash;
     }
 
-    // Compare bcrypt hash
-    if (!bcrypt.compareSync(password, user.password_hash)) {
+    // Compare bcrypt hash (async)
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+    if (!passwordMatch) {
       return res.status(400).json({ error: 'Invalid email or password.' });
     }
 
@@ -660,6 +661,12 @@ app.post('/api/workspace/:classroomId', async (req, res) => {
 });
 
 // 7. Submit Solution (combined payload code + reasoning + telemetry)
+// Uses PostgreSQL ON CONFLICT DO UPDATE (upsert) for idempotency.
+// The unique constraint on (student_id, question_id) is enforced at the DB level:
+// - First submission: INSERT → creates a new row
+// - Re-submission (typo fix / intentional resubmit): UPDATE → overwrites previous answer
+// - Concurrent duplicate clicks: DB serializes them; only one write wins, others get 200 with same ID
+// No application-layer time window needed — the database guarantees correctness.
 app.post('/api/submit', async (req, res) => {
   try {
     const sessionToken = req.headers['authorization'];
@@ -691,10 +698,25 @@ app.post('/api/submit', async (req, res) => {
 
     // Branch logic: TestSubmission vs standard Submission
     if (testId) {
-      const insertQuery = await query(
+      // ON CONFLICT DO UPDATE: if the student already submitted this question in this test,
+      // overwrite with the latest answer. The unique constraint is on (student_id, question_id, test_id).
+      const upsertQuery = await query(
         `INSERT INTO TestSubmissions 
          (test_id, student_id, question_id, code, code_output, reasoning_answer, time_taken_seconds, tab_switch_count, headings_reached, dwell_seconds, max_scroll_depth_percent, notes_telemetry) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ON CONFLICT (student_id, question_id, test_id)
+         DO UPDATE SET
+           code                    = EXCLUDED.code,
+           code_output             = EXCLUDED.code_output,
+           reasoning_answer        = EXCLUDED.reasoning_answer,
+           time_taken_seconds      = EXCLUDED.time_taken_seconds,
+           tab_switch_count        = EXCLUDED.tab_switch_count,
+           headings_reached        = EXCLUDED.headings_reached,
+           dwell_seconds           = EXCLUDED.dwell_seconds,
+           max_scroll_depth_percent = EXCLUDED.max_scroll_depth_percent,
+           notes_telemetry         = EXCLUDED.notes_telemetry,
+           submitted_at            = NOW()
+         RETURNING id`,
         [
           testId,
           studentId,
@@ -710,18 +732,34 @@ app.post('/api/submit', async (req, res) => {
           notesTelemetry ? JSON.stringify(notesTelemetry) : null
         ]
       );
-      return res.status(201).json({
-        message: 'Test submission saved successfully',
-        submissionId: insertQuery.rows[0].id
+      return res.status(200).json({
+        message: 'Test submission saved successfully.',
+        submissionId: upsertQuery.rows[0].id
       });
     }
 
     const wasEmpty = !code.trim() || !reasoningAnswer.trim();
 
-    const insertQuery = await query(
+    // ON CONFLICT DO UPDATE: if the student already submitted this question in this classroom,
+    // overwrite with the latest answer. The unique constraint is on (student_id, question_id).
+    const upsertQuery = await query(
       `INSERT INTO Submissions 
        (student_id, classroom_id, question_id, code, code_output, reasoning_answer, time_taken_seconds, tab_switch_count, headings_reached, was_empty, dwell_seconds, max_scroll_depth_percent, notes_telemetry) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       ON CONFLICT (student_id, question_id)
+       DO UPDATE SET
+         code                    = EXCLUDED.code,
+         code_output             = EXCLUDED.code_output,
+         reasoning_answer        = EXCLUDED.reasoning_answer,
+         time_taken_seconds      = EXCLUDED.time_taken_seconds,
+         tab_switch_count        = EXCLUDED.tab_switch_count,
+         headings_reached        = EXCLUDED.headings_reached,
+         was_empty               = EXCLUDED.was_empty,
+         dwell_seconds           = EXCLUDED.dwell_seconds,
+         max_scroll_depth_percent = EXCLUDED.max_scroll_depth_percent,
+         notes_telemetry         = EXCLUDED.notes_telemetry,
+         submitted_at            = NOW()
+       RETURNING id`,
       [
         studentId,
         classroomId,
@@ -739,9 +777,9 @@ app.post('/api/submit', async (req, res) => {
       ]
     );
 
-    res.status(201).json({
-      message: 'Submission saved successfully',
-      submissionId: insertQuery.rows[0].id
+    res.status(200).json({
+      message: 'Submission saved successfully.',
+      submissionId: upsertQuery.rows[0].id
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -873,7 +911,8 @@ app.post('/api/admin/login', async (req, res) => {
     }
 
     const admin = adminQuery.rows[0];
-    if (!bcrypt.compareSync(password, admin.password_hash)) {
+    const adminPasswordMatch = await bcrypt.compare(password, admin.password_hash);
+    if (!adminPasswordMatch) {
       return res.status(400).json({ error: 'Invalid email or password.' });
     }
 
@@ -970,6 +1009,111 @@ app.get('/api/admin/classroom/:id/quick-questions', async (req, res) => {
       ORDER BY topic_number DESC
     `, [id]);
     res.json({ quickQuestions: qqQuery.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Batch endpoint: returns all classroom details in one call using a single SQL query.
+// Uses PostgreSQL JSON aggregation (json_build_object / json_agg / COALESCE) to fetch
+// roster, mishaps, quick-questions, and assignments in ONE database round-trip instead of
+// 4 parallel queries. This uses exactly 1 connection from the pool, preventing exhaustion.
+app.get('/api/admin/classroom/:id/details', async (req, res) => {
+  try {
+    const auth = await validateAdminSession(req.headers['authorization']);
+    if (!auth.authenticated) return res.status(401).json({ error: auth.error });
+
+    const { id } = req.params;
+
+    // Single SQL query that aggregates all 4 data sets into one response object.
+    // Each subquery runs in the same transaction context, using just 1 DB connection.
+    const result = await query(`
+      SELECT
+        -- 1. Roster: all enrolled students
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'id',         u.id,
+            'name',       u.name,
+            'rollNumber', u.roll_number,
+            'email',      u.email,
+            'phone',      u.phone
+          ) ORDER BY u.name ASC)
+          FROM Users u
+          INNER JOIN UserClassrooms uc ON uc.user_id = u.id
+          WHERE uc.classroom_id = $1
+        ), '[]'::json) AS roster,
+
+        -- 2. Mishaps: all behavior events for this classroom
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'id',                  ml.id,
+            'type',                ml.type,
+            'timestamp',           ml.timestamp,
+            'meta',                ml.meta,
+            'studentName',         u.name,
+            'studentRollNumber',   u.roll_number
+          ) ORDER BY ml.timestamp DESC)
+          FROM MishapLogs ml
+          INNER JOIN Users u ON u.id = ml.student_id
+          WHERE ml.classroom_id = $1
+        ), '[]'::json) AS mishaps,
+
+        -- 3. Quick Questions: topic-number-gated questions (QQ epoch >= 1000000)
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'id',           q.id,
+            'timestampSec', q.topic_number,
+            'questionText', q.reasoning_prompt
+          ) ORDER BY q.topic_number DESC)
+          FROM Questions q
+          WHERE q.classroom_id = $1 AND q.topic_number >= 1000000
+        ), '[]'::json) AS "quickQuestions",
+
+        -- 4. Assignments: with nested questions and submitted question IDs
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'id',                a.id,
+            'title',             a.title,
+            'status',            a.status,
+            'targetStudentIds',  a.target_student_ids,
+            'createdAt',         a.created_at,
+            'questions', COALESCE((
+              SELECT json_agg(json_build_object(
+                'id',             aq.id,
+                'codeTaskPrompt', aq.code_task_prompt,
+                'reasoningPrompt', aq.reasoning_prompt,
+                'reasoningType',  aq.reasoning_type,
+                'options',        aq.options,
+                'timerSeconds',   aq.timer_seconds
+              ) ORDER BY aq.question_order)
+              FROM AssignmentQuestions aq WHERE aq.assignment_id = a.id
+            ), '[]'::json),
+            'submittedQuestionIds', COALESCE((
+              SELECT json_agg(DISTINCT asub.question_id)
+              FROM AssignmentSubmissions asub WHERE asub.assignment_id = a.id
+            ), '[]'::json)
+          ) ORDER BY a.created_at DESC)
+          FROM Assignments a
+          WHERE a.classroom_id = $1
+        ), '[]'::json) AS assignments
+    `, [id]);
+
+    // Active student IDs from in-memory socket mappings — zero DB cost, O(sockets) lookup
+    const activeStudentIds = [];
+    for (const mapping of Object.values(activeSocketMappings)) {
+      if (mapping.classroomId === id && !activeStudentIds.includes(mapping.studentId)) {
+        activeStudentIds.push(mapping.studentId);
+      }
+    }
+
+    const row = result.rows[0];
+    res.json({
+      roster:         row.roster         || [],
+      activeStudentIds,
+      mishaps:        row.mishaps        || [],
+      quickQuestions: row.quickQuestions || [],
+      assignments:    row.assignments    || []
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -67,15 +67,27 @@ We have successfully migrated the database to Supabase PostgreSQL, implemented t
    - Switched `Cross-Origin-Embedder-Policy` headers back to `require-corp` in `next.config.ts`.
    - This aligns the top-level document's COEP policy with Stackblitz's embedded iframe settings (`w-corp-staticblitz.com`), allowing WebAssembly memory serialization to execute securely.
 
+## 6. Form Validation & Rate Limiting (Latest Update)
+
+### Custom Rate Limiting
+- **IP-Based In-Memory Limiter**: Implemented a lightweight rate-limiting store directly inside the backend. It uses request IP attributes (supporting Cloudflare headers like `cf-connecting-ip`) to block requests exceeding limits.
+- **Enforcement**: Applied to registration, login, and OTP verification routes (`/api/register`, `/api/login`, `/api/verify-otp`). Limits request rates to 5 per minute per IP. Returns a standard `429 Too Many Requests` status code with warning logs printed as `[SECURITY]` in the server logs.
+
+### Client and Server-side Input Validation
+- **Registration Validations**:
+  - Enforced format checks for emails using standard regular expressions on both the client (frontend) and server (backend).
+  - Enforced password complexity requirements (minimum 6 characters) on both client and server sides.
+  - Enforced non-empty check for student roll numbers.
+- **Login Validations**:
+  - Validated email format checks prior to POSTing to reduce invalid server queries.
+
 ---
 
-## Verification & Testing
+## 7. Verification Results
 
-- **Priority 0 Concurrency Test**: Spawned 20 parallel client threads hitting registration, verification, login, dashboard bootstrap, classroom join, and content fetching endpoints:
-  - **Success rate**: 100% (20/20 successfully completed)
-  - **Total Runtime**: 4629ms
-  - **Average Latency**: 231.45ms/user
-  - Database pool holds stable.
+* **Compilation**: Build successfully checked using `npm run build` which completed with zero compilation, typechecking, or linting errors.
+* **Security & Resilience**: PM2 auto-restart and custom IP rate-limiting rules verified to work successfully.
+* **Integrations**: All forms prevent submission and display errors when invalid input (e.g. invalid email format) is typed.
 - Executed `verify_v2.js` validating full backend endpoint sequences:
 ```bash
 --- STARTING v2 BACKEND ENDPOINT VERIFICATION ---
