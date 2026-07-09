@@ -10,6 +10,15 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
+// Override console methods to include timestamps globally
+['log', 'warn', 'error'].forEach(method => {
+  const original = console[method];
+  console[method] = function (...args) {
+    const timestamp = new Date().toISOString();
+    original.apply(console, [`[${timestamp}]`, ...args]);
+  };
+});
+
 const { query } = require('./db');
 const nodemailer = require('nodemailer');
 
