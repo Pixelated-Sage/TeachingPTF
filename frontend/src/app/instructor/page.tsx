@@ -160,6 +160,7 @@ export default function InstructorDashboard() {
   const [noteTitle, setNoteTitle] = useState('');
   const [noteContent, setNoteContent] = useState('');
   const [noteStatusMsg, setNoteStatusMsg] = useState('');
+  const [classroomNotes, setClassroomNotes] = useState<any[]>([]);
 
   // Rules Flags State
   const [tabSwitchBlocked, setTabSwitchBlocked] = useState(true);
@@ -256,6 +257,7 @@ export default function InstructorDashboard() {
       setMishaps(data.mishaps);
       setQuickQuestions(data.quickQuestions);
       setAssignments(data.assignments || []);
+      setClassroomNotes(data.notes || []);
     } catch (err: any) {
       setError(err.message || 'Error loading control center data.');
     } finally {
@@ -442,6 +444,7 @@ export default function InstructorDashboard() {
       });
       if (!res.ok) throw new Error('Failed to save notes');
       setNoteStatusMsg('Note published successfully!');
+      fetchClassroomDetails();
       
       // Trigger targeted socket push to connected clients
       // Note: backend endpoint emits 'classroom:notes_updated' directly.
@@ -1301,84 +1304,120 @@ export default function InstructorDashboard() {
 
             {/* TAB: NOTES PUBLISHER */}
             {activeSection === 'notes' && (
-              <div className="max-w-2xl mx-auto space-y-4">
-                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Publish Targeted Notes Update</div>
-
-                {noteStatusMsg && (
-                  <div className={`p-2.5 rounded text-xs font-semibold ${noteStatusMsg.startsWith('Error') ? 'bg-rose-500/10 border border-rose-500/20 text-rose-300' : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-300'}`}>
-                    {noteStatusMsg}
-                  </div>
-                )}
-
-                <form onSubmit={handleSaveNote} className="space-y-4">
-                  <div className="flex gap-4">
-                    <div className="w-24">
-                      <label className="block text-[10px] uppercase font-bold text-slate-550 mb-1">Topic No.</label>
-                      <input
-                        type="number"
-                        value={noteTopic}
-                        onChange={(e) => setNoteTopic(e.target.value)}
-                        required
-                        className="w-full px-3 py-2 bg-slate-950 border border-slate-855 rounded-lg text-slate-205 text-xs focus:outline-none"
-                      />
-                    </div>
-
-                    <div className="flex-1">
-                      <label className="block text-[10px] uppercase font-bold text-slate-550 mb-1">Note Title</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Introduction to React State"
-                        value={noteTitle}
-                        onChange={(e) => setNoteTitle(e.target.value)}
-                        required
-                        className="w-full px-3 py-2 bg-slate-955 border border-slate-855 rounded-lg text-slate-200 text-xs focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
-                    <label className="block text-[10px] uppercase font-bold text-slate-450">Import Markdown Note File</label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="file"
-                        accept=".md"
-                        id="note-file-upload"
-                        onChange={handleFileUpload}
-                        className="hidden"
-                      />
-                      <label
-                        htmlFor="note-file-upload"
-                        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg text-xs font-semibold cursor-pointer transition-all duration-150 border border-slate-700 hover:border-slate-600 flex items-center gap-2"
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Left Column: Published Notes Directory */}
+                <div className="space-y-4 lg:col-span-1 bg-slate-950 border border-slate-850 p-5 rounded-2xl">
+                  <div className="text-[10px] font-bold text-violet-400 uppercase tracking-wider mb-2">Classroom Notes Directory</div>
+                  <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1 custom-notes-scrollbar">
+                    {classroomNotes.map((note) => (
+                      <div
+                        key={note.id}
+                        onClick={() => {
+                          setNoteTopic(note.topicNumber.toString());
+                          setNoteTitle(note.title);
+                          setNoteContent(note.markdownContent);
+                        }}
+                        className="p-3 bg-slate-900 hover:bg-slate-850 border border-slate-850 hover:border-violet-500/40 rounded-xl cursor-pointer transition-all duration-150"
                       >
-                        <Upload className="w-4 h-4 text-violet-400" />
-                        Choose Markdown File (.md)
-                      </label>
-                      <span className="text-[11px] text-slate-400 italic">
-                        Accepts LibreOffice exported or native Markdown documents.
-                      </span>
+                        <div className="flex justify-between items-start gap-1">
+                          <span className="text-[11px] font-extrabold text-slate-250 truncate block flex-1">{note.title}</span>
+                          <span className="text-[9px] font-mono bg-violet-500/10 text-violet-400 px-1.5 py-0.5 rounded border border-violet-500/20 shrink-0">
+                            Topic {note.topicNumber}
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-slate-500 line-clamp-2 mt-1.5 font-mono">
+                          {note.markdownContent.slice(0, 100)}...
+                        </p>
+                      </div>
+                    ))}
+                    {classroomNotes.length === 0 && (
+                      <div className="text-center py-10 text-slate-650 text-xs italic">
+                        No notes published yet for this classroom.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Column: Editor Form */}
+                <div className="lg:col-span-2 space-y-4 bg-slate-950/40 border border-slate-850 p-6 rounded-2xl">
+                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Publish Targeted Notes Update</div>
+
+                  {noteStatusMsg && (
+                    <div className={`p-2.5 rounded text-xs font-semibold ${noteStatusMsg.startsWith('Error') ? 'bg-rose-500/10 border border-rose-500/20 text-rose-300' : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-300'}`}>
+                      {noteStatusMsg}
                     </div>
-                  </div>
+                  )}
 
-                  <div>
-                    <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1">Markdown Content</label>
-                    <textarea
-                      placeholder="# Heading Title&#10;&#10;Use ## Heading 1 for scroll tracking anchors."
-                      value={noteContent}
-                      onChange={(e) => setNoteContent(e.target.value)}
-                      rows={8}
-                      required
-                      className="w-full px-3 py-2 bg-slate-950 border border-slate-855 rounded-lg text-slate-200 text-xs font-mono focus:outline-none resize-none"
-                    />
-                  </div>
+                  <form onSubmit={handleSaveNote} className="space-y-4">
+                    <div className="flex gap-4">
+                      <div className="w-24">
+                        <label className="block text-[10px] uppercase font-bold text-slate-550 mb-1">Topic No.</label>
+                        <input
+                          type="number"
+                          value={noteTopic}
+                          onChange={(e) => setNoteTopic(e.target.value)}
+                          required
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-855 rounded-lg text-slate-205 text-xs focus:outline-none"
+                        />
+                      </div>
 
-                  <button
-                    type="submit"
-                    className="w-full py-2 bg-violet-650 hover:bg-violet-600 text-white font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Publish Note & Push Update via Sockets</span>
-                  </button>
-                </form>
+                      <div className="flex-1">
+                        <label className="block text-[10px] uppercase font-bold text-slate-555 mb-1">Note Title</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Introduction to React State"
+                          value={noteTitle}
+                          onChange={(e) => setNoteTitle(e.target.value)}
+                          required
+                          className="w-full px-3 py-2 bg-slate-955 border border-slate-855 rounded-lg text-slate-200 text-xs focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+                      <label className="block text-[10px] uppercase font-bold text-slate-450">Import Markdown Note File</label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="file"
+                          accept=".md"
+                          id="note-file-upload"
+                          onChange={handleFileUpload}
+                          className="hidden"
+                        />
+                        <label
+                          htmlFor="note-file-upload"
+                          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg text-xs font-semibold cursor-pointer transition-all duration-150 border border-slate-700 hover:border-slate-600 flex items-center gap-2"
+                        >
+                          <Upload className="w-4 h-4 text-violet-400" />
+                          Choose Markdown File (.md)
+                        </label>
+                        <span className="text-[11px] text-slate-400 italic">
+                          Accepts LibreOffice exported or native Markdown documents.
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1">Markdown Content</label>
+                      <textarea
+                        placeholder="# Heading Title&#10;&#10;Use ## Heading 1 for scroll tracking anchors."
+                        value={noteContent}
+                        onChange={(e) => setNoteContent(e.target.value)}
+                        rows={8}
+                        required
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-855 rounded-lg text-slate-200 text-xs font-mono focus:outline-none resize-none"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2 bg-violet-650 hover:bg-violet-600 text-white font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Publish Note & Push Update via Sockets</span>
+                    </button>
+                  </form>
+                </div>
               </div>
             )}
           </div>

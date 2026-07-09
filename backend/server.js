@@ -1016,8 +1016,8 @@ app.get('/api/admin/classroom/:id/quick-questions', async (req, res) => {
 
 // Batch endpoint: returns all classroom details in one call using a single SQL query.
 // Uses PostgreSQL JSON aggregation (json_build_object / json_agg / COALESCE) to fetch
-// roster, mishaps, quick-questions, and assignments in ONE database round-trip instead of
-// 4 parallel queries. This uses exactly 1 connection from the pool, preventing exhaustion.
+// roster, mishaps, quick-questions, assignments, and notes in ONE database round-trip instead of
+// 5 parallel queries. This uses exactly 1 connection from the pool, preventing connection exhaustion.
 app.get('/api/admin/classroom/:id/details', async (req, res) => {
   try {
     const auth = await validateAdminSession(req.headers['authorization']);
@@ -1025,7 +1025,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
 
     const { id } = req.params;
 
-    // Single SQL query that aggregates all 4 data sets into one response object.
+    // Single SQL query that aggregates all 5 data sets into one response object.
     // Each subquery runs in the same transaction context, using just 1 DB connection.
     const result = await query(`
       SELECT
@@ -1095,7 +1095,19 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
           ) ORDER BY a.created_at DESC)
           FROM Assignments a
           WHERE a.classroom_id = $1
-        ), '[]'::json) AS assignments
+        ), '[]'::json) AS assignments,
+
+        -- 5. Notes: previously published targeted note updates
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'id',              n.id,
+            'topicNumber',     n.topic_number,
+            'title',           n.title,
+            'markdownContent', n.markdown_content
+          ) ORDER BY n.topic_number ASC)
+          FROM Notes n
+          WHERE n.classroom_id = $1
+        ), '[]'::json) AS notes
     `, [id]);
 
     // Active student IDs from in-memory socket mappings — zero DB cost, O(sockets) lookup
@@ -1112,7 +1124,8 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
       activeStudentIds,
       mishaps:        row.mishaps        || [],
       quickQuestions: row.quickQuestions || [],
-      assignments:    row.assignments    || []
+      assignments:    row.assignments    || [],
+      notes:          row.notes          || []
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
