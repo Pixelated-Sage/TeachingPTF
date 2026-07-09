@@ -34,7 +34,7 @@ export default function AuthPage() {
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
+  const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();

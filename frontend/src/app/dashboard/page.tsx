@@ -53,7 +53,7 @@ export default function Dashboard() {
   const [success, setSuccess] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
 
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
+  const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
 
   const fetchDashboardData = async () => {
     const studentData = localStorage.getItem('student');
