@@ -1266,7 +1266,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
             'id',                a.id,
             'title',             a.title,
             'status',            a.status,
-            'targetStudentIds',  a.target_student_ids,
+            'targetStudentIds',  a.assigned_to,
             'createdAt',         a.created_at,
             'questions', COALESCE((
               SELECT json_agg(json_build_object(
@@ -1276,7 +1276,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
                 'reasoningType',  aq.reasoning_type,
                 'options',        aq.options,
                 'timerSeconds',   aq.timer_seconds
-              ) ORDER BY aq.question_order)
+              ) ORDER BY aq.question_index)
               FROM AssignmentQuestions aq WHERE aq.assignment_id = a.id
             ), '[]'::json),
             'submittedQuestionIds', COALESCE((
@@ -1374,6 +1374,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
       notes:          row.notes          || []
     });
   } catch (err) {
+    console.error('[DETAILS-ERROR] Failed to fetch classroom details:', err);
     res.status(500).json({ error: err.message });
   }
 });
