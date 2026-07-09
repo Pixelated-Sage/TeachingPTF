@@ -2062,8 +2062,33 @@ export default function Workspace() {
         <div className="flex items-center gap-4">
           <div className="text-right hidden md:block">
             <div className="text-sm font-semibold text-slate-200">{student.name}</div>
-            <div className="text-xs text-slate-400">Roll: {student.rollNumber}</div>
+            <div className="text-xs text-slate-400 font-mono">
+              Roll: {student.rollNumber}
+              {lastSyncedTimestamp && (
+                <span className="text-[10px] text-emerald-400 block font-normal">
+                  Saved: {new Date(lastSyncedTimestamp).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
           </div>
+          
+          {/* Manual Save Code button — gives students explicit visual confirmation of saving */}
+          {mode !== 'test' && (
+            <button
+              onClick={async () => {
+                const prevLabel = lastSyncedTimestamp;
+                setLastSyncedTimestamp(null); // Shows temporary spinner state
+                await autosaveWorkspaceToDB();
+                setLastSyncedTimestamp(new Date().toISOString());
+                alert('Workspace code saved successfully to database.');
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-all shadow-md active:scale-95"
+            >
+              <CheckCircle className="w-3.5 h-3.5" />
+              <span>Save Code</span>
+            </button>
+          )}
+
           <button
             onClick={downloadWorkspaceZip}
             disabled={downloadingZip}
@@ -2074,7 +2099,7 @@ export default function Workspace() {
             ) : (
               <Download className="w-3.5 h-3.5" />
             )}
-            <span>Download My Code</span>
+            <span>Download Code</span>
           </button>
           <button 
             onClick={() => {
