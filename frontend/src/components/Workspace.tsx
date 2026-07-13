@@ -500,6 +500,20 @@ export default function Workspace() {
       localStorage.removeItem(`classroom_content_expires_${classroomId}`);
     });
 
+    socket.on('classroom:notes_deleted', (data: { topicNumber: number }) => {
+      setNotesList(prev => prev.filter(n => n.topicNumber !== data.topicNumber));
+      setActiveNote(current => {
+        if (current && current.topicNumber === data.topicNumber) {
+          return null;
+        }
+        return current;
+      });
+
+      // Evict cache
+      localStorage.removeItem(`classroom_content_${classroomId}`);
+      localStorage.removeItem(`classroom_content_expires_${classroomId}`);
+    });
+
     socket.on('classroom:rules_updated', (data: { tabSwitchBlocked: boolean; pasteBlocked: boolean }) => {
       setTabSwitchBlocked(data.tabSwitchBlocked);
       setPasteBlocked(data.pasteBlocked);

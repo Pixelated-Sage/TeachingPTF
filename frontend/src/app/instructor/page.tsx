@@ -34,7 +34,8 @@ import {
   ChevronDown,
   ChevronUp,
   ClipboardList,
-  Upload
+  Upload,
+  Trash2
 } from 'lucide-react';
 
 interface Classroom {
@@ -450,6 +451,43 @@ export default function InstructorDashboard() {
       // Note: backend endpoint emits 'classroom:notes_updated' directly.
       setNoteTitle('');
       setNoteContent('');
+    } catch (err: any) {
+      setNoteStatusMsg(`Error: ${err.message}`);
+    }
+  };
+
+  const handleDeleteNote = async (topicNumber: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!selectedClassroom || !adminToken) return;
+
+    if (!confirm(`Are you sure you want to delete Note Topic ${topicNumber}?`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${backendUrl}/api/admin/notes/${selectedClassroom.id}/${topicNumber}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': adminToken
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to delete note');
+      }
+
+      setNoteStatusMsg('Note deleted successfully.');
+      setTimeout(() => setNoteStatusMsg(''), 3000);
+
+      // Refresh list
+      setClassroomNotes(prev => prev.filter(n => n.topicNumber !== topicNumber));
+
+      // Reset fields if currently editing
+      if (noteTopic === topicNumber.toString()) {
+        setNoteTopic('');
+        setNoteTitle('');
+        setNoteContent('');
+      }
     } catch (err: any) {
       setNoteStatusMsg(`Error: ${err.message}`);
     }
@@ -1319,11 +1357,20 @@ export default function InstructorDashboard() {
                         }}
                         className="p-3 bg-slate-900 hover:bg-slate-850 border border-slate-850 hover:border-violet-500/40 rounded-xl cursor-pointer transition-all duration-150"
                       >
-                        <div className="flex justify-between items-start gap-1">
+                        <div className="flex justify-between items-start gap-2">
                           <span className="text-[11px] font-extrabold text-slate-250 truncate block flex-1">{note.title}</span>
-                          <span className="text-[9px] font-mono bg-violet-500/10 text-violet-400 px-1.5 py-0.5 rounded border border-violet-500/20 shrink-0">
-                            Topic {note.topicNumber}
-                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-[9px] font-mono bg-violet-500/10 text-violet-400 px-1.5 py-0.5 rounded border border-violet-500/20">
+                              Topic {note.topicNumber}
+                            </span>
+                            <button
+                              onClick={(e) => handleDeleteNote(note.topicNumber, e)}
+                              className="p-1 text-slate-500 hover:text-rose-500 hover:bg-slate-800 rounded transition-colors"
+                              title="Delete Note"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                         <p className="text-[9px] text-slate-500 line-clamp-2 mt-1.5 font-mono">
                           {note.markdownContent.slice(0, 100)}...

@@ -1768,6 +1768,35 @@ app.post('/api/admin/notes', async (req, res) => {
   }
 });
 
+app.delete('/api/admin/notes/:classroomId/:topicNumber', async (req, res) => {
+  try {
+    const auth = await validateAdminSession(req.headers['authorization']);
+    if (!auth.authenticated) return res.status(401).json({ error: auth.error });
+
+    const { classroomId, topicNumber } = req.params;
+    if (!classroomId || !topicNumber) {
+      return res.status(400).json({ error: 'Classroom ID and Topic Number are required.' });
+    }
+
+    await query(
+      'DELETE FROM Notes WHERE classroom_id = $1 AND topic_number = $2',
+      [classroomId, Number(topicNumber)]
+    );
+
+    // Invalidate notes cache
+    notesCache.delete(classroomId);
+
+    // Notify student workspaces to remove this note in real-time
+    io.to(classroomId).emit('classroom:notes_deleted', {
+      topicNumber: Number(topicNumber)
+    });
+
+    res.json({ success: true, message: 'Note deleted successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/student/:studentId/profile', async (req, res) => {
   try {
     const auth = await validateAdminSession(req.headers['authorization']);
