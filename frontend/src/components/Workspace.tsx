@@ -1409,23 +1409,51 @@ export default function Workspace() {
   };
 
   const handleRunWorkspace = async () => {
+    if (!webcontainerRef.current) return;
+
+    let projectDir = '/';
     let needsInstall = true;
-    if (webcontainerRef.current) {
-      try {
-        const rootEntries = await webcontainerRef.current.fs.readdir('/');
-        if (rootEntries.includes('node_modules')) {
-          needsInstall = false;
+
+    try {
+      const rootEntries = await webcontainerRef.current.fs.readdir('/');
+
+      // Case 1: package.json exists at root — run directly here
+      if (rootEntries.includes('package.json')) {
+        projectDir = '/';
+        needsInstall = !rootEntries.includes('node_modules');
+
+      } else {
+        // Case 2: No root package.json. Look for a single subfolder that has one (e.g. vite scaffold)
+        const subDirs = rootEntries.filter((e: string) => !e.startsWith('.') && e !== 'node_modules');
+
+        for (const dir of subDirs) {
+          try {
+            const subEntries = await webcontainerRef.current.fs.readdir(`/${dir}`);
+            if (subEntries.includes('package.json')) {
+              projectDir = `/${dir}`;
+              needsInstall = !subEntries.includes('node_modules');
+              break;
+            }
+          } catch (e) { /* not a directory */ }
         }
-      } catch (e) {
-        console.error('Failed to check node_modules:', e);
       }
+    } catch (e) {
+      console.error('Failed to detect project directory:', e);
     }
 
-    // Add performance flags to speed up initial installs, or skip completely if node_modules already exists
-    const cmd = needsInstall 
-      ? 'npm install --prefer-offline --no-audit --no-fund && npm run start\n' 
-      : 'npm run start\n';
+    const cdPrefix = projectDir !== '/' ? `cd ${projectDir} && ` : '';
+    const installCmd = needsInstall ? 'npm install --prefer-offline --no-audit --no-fund && ' : '';
 
+    // Detect which start script to use: prefer "dev" (Vite), fallback to "start"
+    let startCmd = 'npm run start';
+    try {
+      const pkgJson = await webcontainerRef.current.fs.readFile(`${projectDir}/package.json`, 'utf-8');
+      const pkg = JSON.parse(pkgJson);
+      if (pkg.scripts?.dev) startCmd = 'npm run dev';
+      else if (pkg.scripts?.start) startCmd = 'npm run start';
+    } catch (e) { /* use default */ }
+
+    const cmd = `${cdPrefix}${installCmd}${startCmd}\n`;
     handleAddTerminalTab('Run Workspace', cmd);
   };
 
