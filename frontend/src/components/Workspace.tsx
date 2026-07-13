@@ -519,6 +519,13 @@ export default function Workspace() {
       setPasteBlocked(data.pasteBlocked);
     });
 
+    socket.on('classroom:student_kicked', (data: { studentId: string }) => {
+      if (student && data.studentId === student.id) {
+        alert('You have been removed from this classroom by the instructor.');
+        window.location.href = '/dashboard';
+      }
+    });
+
     return () => {
       socket.disconnect();
       socketInstance.current = null;

@@ -493,6 +493,32 @@ export default function InstructorDashboard() {
     }
   };
 
+  const handleDeleteStudent = async (studentId: string, studentName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!selectedClassroom || !adminToken) return;
+
+    const confirmMsg = `Are you sure you want to remove "${studentName}" from this classroom? All workspace code, test submissions, and mishap logs for this student in this classroom will be permanently deleted.`;
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      const res = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/student/${studentId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': adminToken
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to remove student');
+      }
+
+      alert('Student removed successfully.');
+      fetchClassroomDetails();
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    }
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -908,11 +934,20 @@ export default function InstructorDashboard() {
                         <div className="text-[9px] text-slate-500 font-mono mt-0.5">{student.email}</div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 bg-slate-950/40 border border-slate-855 px-2 py-1 rounded-lg">
-                        <span className={`w-2 h-2 rounded-full ${student.connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-650'}`} />
-                        <span className="text-[9px] font-mono text-slate-400 uppercase">
-                          {student.connected ? 'Online' : 'Offline'}
-                        </span>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 bg-slate-950/40 border border-slate-855 px-2 py-1 rounded-lg">
+                          <span className={`w-2 h-2 rounded-full ${student.connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-650'}`} />
+                          <span className="text-[9px] font-mono text-slate-400 uppercase">
+                            {student.connected ? 'Online' : 'Offline'}
+                          </span>
+                        </div>
+                        <button
+                          onClick={(e) => handleDeleteStudent(student.id, student.name, e)}
+                          className="p-1 text-slate-500 hover:text-rose-500 hover:bg-slate-800 rounded transition-colors"
+                          title="Remove Student from Classroom"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                   ))}

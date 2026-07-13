@@ -1797,6 +1797,42 @@ app.delete('/api/admin/notes/:classroomId/:topicNumber', async (req, res) => {
   }
 });
 
+app.delete('/api/admin/classroom/:classroomId/student/:studentId', async (req, res) => {
+  try {
+    const auth = await validateAdminSession(req.headers['authorization']);
+    if (!auth.authenticated) return res.status(401).json({ error: auth.error });
+
+    const { classroomId, studentId } = req.params;
+
+    // Remove enrollment
+    await query(
+      'DELETE FROM UserClassrooms WHERE user_id = $1 AND classroom_id = $2',
+      [studentId, classroomId]
+    );
+
+    // Clean up related classroom records
+    await query(
+      'DELETE FROM StudentWorkspaces WHERE student_id = $1 AND classroom_id = $2',
+      [studentId, classroomId]
+    );
+    await query(
+      'DELETE FROM Submissions WHERE student_id = $1 AND classroom_id = $2',
+      [studentId, classroomId]
+    );
+    await query(
+      'DELETE FROM MishapLogs WHERE student_id = $1 AND classroom_id = $2',
+      [studentId, classroomId]
+    );
+
+    // Notify student workspace to exit classroom in real-time
+    io.to(classroomId).emit('classroom:student_kicked', { studentId });
+
+    res.json({ success: true, message: 'Student removed from classroom successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/student/:studentId/profile', async (req, res) => {
   try {
     const auth = await validateAdminSession(req.headers['authorization']);
