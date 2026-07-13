@@ -1384,7 +1384,7 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
     res.json({
       roster,
       activeStudentIds,
-      mishaps:        classroomMishaps,
+      mishaps:        row.db_mishaps || [],
       quickQuestions: row.quickQuestions || [],
       assignments:    row.assignments    || [],
       notes:          row.notes          || []
