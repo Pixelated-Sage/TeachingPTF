@@ -259,6 +259,10 @@ export default function InstructorDashboard() {
       setQuickQuestions(data.quickQuestions);
       setAssignments(data.assignments || []);
       setClassroomNotes(data.notes || []);
+      if (data.rules) {
+        setTabSwitchBlocked(data.rules.tabSwitchBlocked);
+        setPasteBlocked(data.rules.pasteBlocked);
+      }
     } catch (err: any) {
       setError(err.message || 'Error loading control center data.');
     } finally {
@@ -534,9 +538,11 @@ export default function InstructorDashboard() {
   };
 
   // Save Rules toggles
-  const handleSaveRules = async () => {
+  const handleSaveRules = async (tabSwitchVal?: boolean, pasteVal?: boolean) => {
     if (!selectedClassroom || !adminToken) return;
     setRulesStatusMsg('');
+    const tabVal = tabSwitchVal !== undefined ? tabSwitchVal : tabSwitchBlocked;
+    const pstVal = pasteVal !== undefined ? pasteVal : pasteBlocked;
     try {
       const res = await fetch(`${backendUrl}/api/admin/classroom/${selectedClassroom.id}/rules`, {
         method: 'POST',
@@ -544,10 +550,11 @@ export default function InstructorDashboard() {
           'Content-Type': 'application/json',
           'Authorization': adminToken
         },
-        body: JSON.stringify({ tabSwitchBlocked, pasteBlocked })
+        body: JSON.stringify({ tabSwitchBlocked: tabVal, pasteBlocked: pstVal })
       });
       if (!res.ok) throw new Error('Failed to update rules');
       setRulesStatusMsg('Enforcement rules updated successfully!');
+      setTimeout(() => setRulesStatusMsg(''), 3000);
     } catch (err: any) {
       setRulesStatusMsg(`Error: ${err.message}`);
     }
@@ -1216,13 +1223,17 @@ export default function InstructorDashboard() {
                             <div className="text-[9px] text-slate-500 mt-0.5">Logs students switching browser tabs.</div>
                           </div>
                           <button
-                            onClick={() => setTabSwitchBlocked(!tabSwitchBlocked)}
-                            className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
-                              tabSwitchBlocked ? 'bg-rose-500/25 text-rose-400 border border-rose-500/35' : 'bg-slate-900 text-slate-500 border border-slate-800'
-                            }`}
-                          >
-                            {tabSwitchBlocked ? 'ENABLED' : 'DISABLED'}
-                          </button>
+                             onClick={() => {
+                               const nextVal = !tabSwitchBlocked;
+                               setTabSwitchBlocked(nextVal);
+                               handleSaveRules(nextVal, pasteBlocked);
+                             }}
+                             className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
+                               tabSwitchBlocked ? 'bg-rose-500/25 text-rose-400 border border-rose-500/35' : 'bg-slate-900 text-slate-500 border border-slate-800'
+                             }`}
+                           >
+                             {tabSwitchBlocked ? 'ENABLED' : 'DISABLED'}
+                           </button>
                         </div>
                         <div className="flex justify-between items-center">
                           <div>
@@ -1230,7 +1241,11 @@ export default function InstructorDashboard() {
                             <div className="text-[9px] text-slate-500 mt-0.5">Disables pasting external code templates.</div>
                           </div>
                           <button
-                            onClick={() => setPasteBlocked(!pasteBlocked)}
+                            onClick={() => {
+                              const nextVal = !pasteBlocked;
+                              setPasteBlocked(nextVal);
+                              handleSaveRules(tabSwitchBlocked, nextVal);
+                            }}
                             className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
                               pasteBlocked ? 'bg-rose-500/25 text-rose-400 border border-rose-500/35' : 'bg-slate-900 text-slate-500 border border-slate-800'
                             }`}
@@ -1238,12 +1253,6 @@ export default function InstructorDashboard() {
                             {pasteBlocked ? 'ENABLED' : 'DISABLED'}
                           </button>
                         </div>
-                        <button
-                          onClick={handleSaveRules}
-                          className="w-full py-2 bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs rounded-lg transition-colors"
-                        >
-                          Save Policy Rules
-                        </button>
                       </div>
                     </div>
                   </div>

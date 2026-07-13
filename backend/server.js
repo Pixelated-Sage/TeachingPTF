@@ -740,9 +740,16 @@ app.get('/api/classroom/:id/content', async (req, res) => {
       [classroomId]
     );
 
+    const classroomQuery = await query(
+      'SELECT tab_switch_blocked as "tabSwitchBlocked", paste_blocked as "pasteBlocked" FROM Classrooms WHERE id = $1',
+      [classroomId]
+    );
+    const rules = classroomQuery.rows[0] || { tabSwitchBlocked: true, pasteBlocked: true };
+
     const payload = {
       notes: notesQuery.rows,
-      questions: questionsQuery.rows
+      questions: questionsQuery.rows,
+      rules
     };
 
     notesCache.set(classroomId, payload);
@@ -1314,7 +1321,16 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
           ) ORDER BY n.topic_number ASC)
           FROM Notes n
           WHERE n.classroom_id = $1
-        ), '[]'::json) AS notes
+        ), '[]'::json) AS notes,
+
+        -- 6. Rules: tab switch and paste block status
+        COALESCE((
+          SELECT json_build_object(
+            'tabSwitchBlocked', tab_switch_blocked,
+            'pasteBlocked',      paste_blocked
+          )
+          FROM Classrooms WHERE id = $1
+        ), '{"tabSwitchBlocked": true, "pasteBlocked": true}'::json) AS rules
     `, [id]);
 
     // Active student IDs from in-memory socket mappings — zero DB cost, O(sockets) lookup
@@ -1387,7 +1403,8 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
       mishaps:        row.db_mishaps || [],
       quickQuestions: row.quickQuestions || [],
       assignments:    row.assignments    || [],
-      notes:          row.notes          || []
+      notes:          row.notes          || [],
+      rules:          row.rules          || { tabSwitchBlocked: true, pasteBlocked: true }
     });
   } catch (err) {
     console.error('[DETAILS-ERROR] Failed to fetch classroom details:', err);
@@ -1426,6 +1443,15 @@ app.post('/api/admin/classroom/:id/rules', async (req, res) => {
 
     const { id } = req.params;
     const { tabSwitchBlocked, pasteBlocked } = req.body;
+
+    // Persist rules state to DB
+    await query(
+      'UPDATE Classrooms SET tab_switch_blocked = $1, paste_blocked = $2 WHERE id = $3',
+      [tabSwitchBlocked, pasteBlocked, id]
+    );
+    
+    // Evict cache
+    notesCache.delete(id);
     
     // Emit rules update live to connected clients in room
     io.to(id).emit('classroom:rules_updated', { tabSwitchBlocked, pasteBlocked });

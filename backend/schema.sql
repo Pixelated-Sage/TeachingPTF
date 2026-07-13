@@ -94,8 +94,10 @@ CREATE TABLE IF NOT EXISTS MishapLogs (
     meta JSONB
 );
 
--- 9. Add live_session_active to Classrooms if not present
+-- 9. Add live_session_active and rules to Classrooms if not present
 ALTER TABLE Classrooms ADD COLUMN IF NOT EXISTS live_session_active BOOLEAN DEFAULT FALSE;
+ALTER TABLE Classrooms ADD COLUMN IF NOT EXISTS tab_switch_blocked BOOLEAN DEFAULT TRUE;
+ALTER TABLE Classrooms ADD COLUMN IF NOT EXISTS paste_blocked BOOLEAN DEFAULT TRUE;
 
 -- 10. Tests Table
 CREATE TABLE IF NOT EXISTS Tests (

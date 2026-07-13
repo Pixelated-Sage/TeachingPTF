@@ -709,6 +709,10 @@ export default function Workspace() {
           questions = parsed.questions;
           setNotesList(notes);
           setQuestionsList(questions);
+          if (parsed.rules) {
+            setTabSwitchBlocked(parsed.rules.tabSwitchBlocked);
+            setPasteBlocked(parsed.rules.pasteBlocked);
+          }
           contentFetchedRef.current = true;
           isCacheValid = true;
         }
@@ -728,11 +732,15 @@ export default function Workspace() {
         questions = data.questions;
         setNotesList(notes);
         setQuestionsList(questions);
+        if (data.rules) {
+          setTabSwitchBlocked(data.rules.tabSwitchBlocked);
+          setPasteBlocked(data.rules.pasteBlocked);
+        }
         contentFetchedRef.current = true;
 
         // Save to cache with randomized 5 to 8 minutes TTL
         const jitterMs = Math.floor(300000 + Math.random() * 180000); 
-        localStorage.setItem(`classroom_content_${classroomId}`, JSON.stringify({ notes, questions }));
+        localStorage.setItem(`classroom_content_${classroomId}`, JSON.stringify({ notes, questions, rules: data.rules }));
         localStorage.setItem(`classroom_content_expires_${classroomId}`, String(Date.now() + jitterMs));
       }
 
