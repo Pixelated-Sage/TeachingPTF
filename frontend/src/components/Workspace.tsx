@@ -1408,8 +1408,25 @@ export default function Workspace() {
     }
   };
 
-  const handleRunWorkspace = () => {
-    handleAddTerminalTab('Run Workspace', 'npm install && npm run start\n');
+  const handleRunWorkspace = async () => {
+    let needsInstall = true;
+    if (webcontainerRef.current) {
+      try {
+        const rootEntries = await webcontainerRef.current.fs.readdir('/');
+        if (rootEntries.includes('node_modules')) {
+          needsInstall = false;
+        }
+      } catch (e) {
+        console.error('Failed to check node_modules:', e);
+      }
+    }
+
+    // Add performance flags to speed up initial installs, or skip completely if node_modules already exists
+    const cmd = needsInstall 
+      ? 'npm install --prefer-offline --no-audit --no-fund && npm run start\n' 
+      : 'npm run start\n';
+
+    handleAddTerminalTab('Run Workspace', cmd);
   };
 
   const resetAllTerminals = () => {
