@@ -470,11 +470,11 @@ export default function Workspace() {
 
     socket.on('classroom:notes_updated', (data: { topicNumber: number; title: string; markdownContent: string; headingsManifest?: HeadingManifestItem[] }) => {
       setNotesList(prev => {
-        const index = prev.findIndex(n => n.topicNumber === data.topicNumber);
+        const index = prev.findIndex(n => Number(n.topicNumber) === Number(data.topicNumber));
         const updated = [...prev];
         const newNote = {
           id: data.topicNumber.toString(),
-          topicNumber: data.topicNumber,
+          topicNumber: Number(data.topicNumber),
           title: data.title,
           markdownContent: data.markdownContent,
           headingsManifest: data.headingsManifest
@@ -486,7 +486,7 @@ export default function Workspace() {
         }
         
         setActiveNote(current => {
-          if (current && current.topicNumber === data.topicNumber) {
+          if (current && Number(current.topicNumber) === Number(data.topicNumber)) {
             return newNote;
           }
           return current;
@@ -501,9 +501,9 @@ export default function Workspace() {
     });
 
     socket.on('classroom:notes_deleted', (data: { topicNumber: number }) => {
-      setNotesList(prev => prev.filter(n => n.topicNumber !== data.topicNumber));
+      setNotesList(prev => prev.filter(n => Number(n.topicNumber) !== Number(data.topicNumber)));
       setActiveNote(current => {
-        if (current && current.topicNumber === data.topicNumber) {
+        if (current && Number(current.topicNumber) === Number(data.topicNumber)) {
           return null;
         }
         return current;
@@ -750,8 +750,8 @@ export default function Workspace() {
         console.error('Failed to restore workspace from database:', err);
       }
 
-      const topicNotes = notes.find((n: NotesData) => n.topicNumber === selectedTopic);
-      const topicQuestion = questions.find((q: QuestionData) => q.topicNumber === selectedTopic);
+      const topicNotes = notes.find((n: NotesData) => Number(n.topicNumber) === Number(selectedTopic));
+      const topicQuestion = questions.find((q: QuestionData) => Number(q.topicNumber) === Number(selectedTopic));
       setActiveNote(topicNotes || null);
       
       if (mode === 'assignment') {
