@@ -2549,10 +2549,12 @@ export default function Workspace() {
 
                       {/* Code Editor */}
                       <div className="flex-grow relative bg-slate-950 h-full">
-                        <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs rounded-full pointer-events-none">
-                          <AlertTriangle className="w-3.5 h-3.5" />
-                          <span>Paste Block Enabled</span>
-                        </div>
+                        {pasteBlocked && (
+                          <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs rounded-full pointer-events-none">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span>Paste Block Enabled</span>
+                          </div>
+                        )}
                         <Editor
                           height="100%"
                           theme="vs-dark"
@@ -2698,10 +2700,12 @@ export default function Workspace() {
 
                     {/* Editor Textarea */}
                     <div className="flex-grow relative bg-slate-950 h-full">
-                      <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs rounded-full pointer-events-none">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        <span>Paste Block Enabled</span>
-                      </div>
+                      {pasteBlocked && (
+                        <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs rounded-full pointer-events-none">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          <span>Paste Block Enabled</span>
+                        </div>
+                      )}
                       <Editor
                         height="100%"
                         theme="vs-dark"
