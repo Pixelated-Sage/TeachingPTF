@@ -171,7 +171,24 @@ const scanDirectory = async (wc: WebContainer, dir = ''): Promise<Record<string,
   
   for (const entry of entries) {
     const relativePath = dir ? `${dir}/${entry.name}` : entry.name;
-    if (entry.name === 'node_modules' || entry.name === '.next' || entry.name === 'package-lock.json' || entry.name === '.git') {
+    if (
+      entry.name === 'node_modules' || 
+      entry.name === '.next' || 
+      entry.name === 'package-lock.json' || 
+      entry.name === 'yarn.lock' ||
+      entry.name === '.git' ||
+      entry.name === 'dist' ||
+      entry.name === 'build' ||
+      entry.name === 'out' ||
+      entry.name === '.cache'
+    ) {
+      continue;
+    }
+
+    // Skip binary files that should not be parsed as text
+    const ext = entry.name.split('.').pop()?.toLowerCase();
+    const binaryExtensions = ['png', 'jpg', 'jpeg', 'gif', 'ico', 'woff', 'woff2', 'ttf', 'eot', 'zip', 'gz', 'mp3', 'mp4', 'pdf'];
+    if (binaryExtensions.includes(ext || '')) {
       continue;
     }
     
@@ -1249,7 +1266,7 @@ export default function Workspace() {
       const diskFiles = await scanDirectory(webcontainerRef.current);
       if (Object.keys(diskFiles).length === 0) return;
 
-      await fetch(`${backendUrl}/api/workspace/${classroomId}`, {
+      const res = await fetch(`${backendUrl}/api/workspace/${classroomId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1257,6 +1274,9 @@ export default function Workspace() {
         },
         body: JSON.stringify({ files: diskFiles })
       });
+      if (!res.ok) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
       console.log('Workspace durably autosaved to database.');
     } catch (e) {
       console.error('Workspace durable autosave failed:', e);
@@ -1441,7 +1461,7 @@ export default function Workspace() {
       console.error('Failed to detect project directory:', e);
     }
 
-    const cdPrefix = projectDir !== '/' ? `cd ${projectDir} && ` : '';
+    const cdPrefix = projectDir !== '/' ? `cd .${projectDir}/ && ` : '';
     const installCmd = needsInstall ? 'npm install --prefer-offline --no-audit --no-fund && ' : '';
 
     // Detect which start script to use: prefer "dev" (Vite), fallback to "start"

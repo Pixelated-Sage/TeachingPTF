@@ -10,12 +10,27 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
-// Override console methods to include timestamps globally
+const fs = require('fs');
+const path = require('path');
+
+// Ensure log directory exists
+const logDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir);
+}
+const logFile = fs.createWriteStream(path.join(logDir, 'server.log'), { flags: 'a' });
+
+// Override console methods to redirect logs to server.log instead of flooding stdout/stderr
 ['log', 'warn', 'error'].forEach(method => {
   const original = console[method];
   console[method] = function (...args) {
     const timestamp = new Date().toISOString();
-    original.apply(console, [`[${timestamp}]`, ...args]);
+    const formatted = `[${timestamp}] [${method.toUpperCase()}] ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ')}\n`;
+    logFile.write(formatted);
+    // Keep error outputs visible in stderr, but redirect standard logs away from student terminal view
+    if (method === 'error') {
+      original.apply(console, [`[${timestamp}]`, ...args]);
+    }
   };
 });
 
@@ -52,7 +67,9 @@ const corsOptions = {
   credentials: true
 };
 
-app.use(cors(corsOptions));app.use(express.json());
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // HTTP Request Logger Middleware
 app.use((req, res, next) => {
@@ -337,10 +354,8 @@ io.on('connection', (socket) => {
       const { studentId, classroomId, mishaps } = data;
       if (!mishaps || mishaps.length === 0) return;
 
-      console.log(`Mishap [batch] buffered: ${mishaps.length} logs for Student: ${studentId}`);
-
-      mishaps.forEach(m => {
-        // 1. Update in-memory real-time aggregate
+      console.log(`Mishap [batch] buffered: ${mishaps.length} logs for Student: ${studentId}`);      mishaps.forEach(m => {
+        // 1. Update in-memory real-time aggregate (scoped strictly by classroomId and studentId)
         updateMishapAggregate(classroomId, studentId, m.type, m.timestamp);
 
         // 2. Queue in the write buffer
@@ -942,6 +957,7 @@ app.post('/api/submit', async (req, res) => {
       submissionId: upsertQuery.rows[0].id
     });
   } catch (err) {
+    console.error('[SUBMIT-ERROR] Failed to save student submission:', err);
     res.status(500).json({ error: err.message });
   }
 });
