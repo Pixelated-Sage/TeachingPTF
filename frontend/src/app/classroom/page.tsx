@@ -21,7 +21,7 @@ const Workspace = dynamic(() => import('@/components/Workspace'), {
 
 export default function ClassroomPage() {
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
+    <main className="h-screen  w-full overflow-hidden bg-slate-950 text-slate-100">
       <Suspense fallback={
         <div className="flex flex-col items-center justify-center min-h-screen bg-slate-950 gap-4">
           <RefreshCw className="w-8 h-8 text-violet-500 animate-spin" />
@@ -29,6 +29,7 @@ export default function ClassroomPage() {
         </div>
       }>
         <Workspace />
+
       </Suspense>
     </main>
   );
