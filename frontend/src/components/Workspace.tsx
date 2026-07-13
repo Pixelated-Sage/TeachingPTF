@@ -252,8 +252,15 @@ export default function Workspace() {
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [terminalWidth, setTerminalWidth] = useState(320);
   const [previewHeight, setPreviewHeight] = useState(250);
+  const [notesWidth, setNotesWidth] = useState(320);
+  const [explorerWidth, setExplorerWidth] = useState(208);
+  const [taskWidth, setTaskWidth] = useState(320);
+  const [terminalsSplitPercent, setTerminalsSplitPercent] = useState(50);
   const [isResizingTerminal, setIsResizingTerminal] = useState(false);
   const [isResizingPreview, setIsResizingPreview] = useState(false);
+  const [isResizingNotes, setIsResizingNotes] = useState(false);
+  const [isResizingExplorer, setIsResizingExplorer] = useState(false);
+  const [isResizingTask, setIsResizingTask] = useState(false);
 
   // File Tree Explorer State
   const [flatFiles, setFlatFiles] = useState<Record<string, string>>({});
@@ -597,21 +604,37 @@ export default function Workspace() {
 
   // 4.2 Resizable Panels Mouse Handlers
   useEffect(() => {
-    if (!isResizingTerminal && !isResizingPreview) return;
+    if (!isResizingTerminal && !isResizingPreview && !isResizingNotes && !isResizingExplorer && !isResizingTask) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isResizingTerminal) {
-        const newWidth = window.innerWidth - e.clientX;
-        setTerminalWidth(Math.max(150, Math.min(newWidth, window.innerWidth - 300)));
+        const offsetLeft = (notesOpen ? notesWidth : 0) + (explorerOpen ? explorerWidth : 40);
+        const availableWidth = window.innerWidth - offsetLeft - (taskOpen ? taskWidth : 40);
+        const relativeX = e.clientX - offsetLeft;
+        const percent = (relativeX / availableWidth) * 100;
+        setTerminalsSplitPercent(Math.max(10, Math.min(percent, 90)));
       } else if (isResizingPreview) {
         const newHeight = window.innerHeight - e.clientY;
         setPreviewHeight(Math.max(100, Math.min(newHeight, window.innerHeight - 200)));
+      } else if (isResizingNotes) {
+        const newWidth = e.clientX;
+        setNotesWidth(Math.max(180, Math.min(newWidth, 600)));
+      } else if (isResizingExplorer) {
+        const offset = notesOpen ? notesWidth : 0;
+        const newWidth = e.clientX - offset;
+        setExplorerWidth(Math.max(120, Math.min(newWidth, 400)));
+      } else if (isResizingTask) {
+        const newWidth = window.innerWidth - e.clientX;
+        setTaskWidth(Math.max(200, Math.min(newWidth, 600)));
       }
     };
 
     const handleMouseUp = () => {
       setIsResizingTerminal(false);
       setIsResizingPreview(false);
+      setIsResizingNotes(false);
+      setIsResizingExplorer(false);
+      setIsResizingTask(false);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -620,7 +643,19 @@ export default function Workspace() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isResizingTerminal, isResizingPreview]);
+  }, [
+    isResizingTerminal, 
+    isResizingPreview, 
+    isResizingNotes, 
+    isResizingExplorer, 
+    isResizingTask, 
+    notesOpen, 
+    notesWidth, 
+    explorerOpen, 
+    explorerWidth, 
+    taskOpen, 
+    taskWidth
+  ]);
 
   // Calculate local storage file cache size
   useEffect(() => {
@@ -2274,11 +2309,12 @@ export default function Workspace() {
 
         {/* 1. Left Notes Panel */}
         <div 
-          className={`flex-none bg-slate-900/60 border-r border-slate-800 backdrop-blur-md transition-all duration-300 overflow-hidden relative z-20 ${
-            notesOpen ? 'w-80' : 'w-0'
+          style={{ width: notesOpen ? `${notesWidth}px` : '0px' }}
+          className={`flex-none bg-slate-900/60 border-r border-slate-800 backdrop-blur-md overflow-hidden relative z-20 ${
+            isResizingNotes ? '' : 'transition-all duration-300'
           }`}
         >
-          <div className="flex flex-col h-full w-80 relative overflow-hidden">
+          <div className="flex flex-col h-full relative overflow-hidden" style={{ width: `${notesWidth}px` }}>
             
             {/* View A: Notes List Directory */}
             <div 
@@ -2368,6 +2404,14 @@ export default function Workspace() {
 
           </div>
         </div>
+
+        {/* Resizer drag handle between Notes Panel & Editor Panel */}
+        {notesOpen && (
+          <div 
+            onMouseDown={() => setIsResizingNotes(true)}
+            className="w-1 bg-slate-800 hover:bg-violet-550 cursor-col-resize transition-colors h-full shrink-0 z-30"
+          />
+        )}
 
         {/* 2. Center WebContainer Editor + Execution Panel */}
         <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden relative h-full">
@@ -3135,7 +3179,7 @@ export default function Workspace() {
                 </div>
 
                 {/* Submit Action Block */}
-                {activeQuestion && (
+                {activeQuestion && (mode === 'test' || mode === 'assignment' || activeTest) && (
                   <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0">
                     <button
                       onClick={handleSubmitSolution}
