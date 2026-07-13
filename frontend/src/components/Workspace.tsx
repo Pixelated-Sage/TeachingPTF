@@ -696,7 +696,7 @@ export default function Workspace() {
         const cachedData = localStorage.getItem(cacheKey);
         const cacheExpires = localStorage.getItem(cacheExpiresKey);
         
-        if (cachedData && cacheExpires && Date.now() < Number(cacheExpires)) {
+        if (mode !== 'live' && cachedData && cacheExpires && Date.now() < Number(cacheExpires)) {
           const parsed = JSON.parse(cachedData);
           notes = parsed.notes;
           questions = parsed.questions;
