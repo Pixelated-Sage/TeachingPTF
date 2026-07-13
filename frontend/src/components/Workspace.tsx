@@ -487,6 +487,10 @@ export default function Workspace() {
 
         return updated;
       });
+
+      // Evict cache to ensure it is fetched cleanly next reload
+      localStorage.removeItem(`classroom_content_${classroomId}`);
+      localStorage.removeItem(`classroom_content_expires_${classroomId}`);
     });
 
     socket.on('classroom:rules_updated', (data: { tabSwitchBlocked: boolean; pasteBlocked: boolean }) => {
@@ -634,8 +638,29 @@ export default function Workspace() {
     try {
       let notes = notesList;
       let questions = questionsList;
+      let isCacheValid = false;
 
-      if (!contentFetchedRef.current || notesList.length === 0) {
+      // Try reading from cache with jittered TTL fallback
+      try {
+        const cacheKey = `classroom_content_${classroomId}`;
+        const cacheExpiresKey = `classroom_content_expires_${classroomId}`;
+        const cachedData = localStorage.getItem(cacheKey);
+        const cacheExpires = localStorage.getItem(cacheExpiresKey);
+        
+        if (cachedData && cacheExpires && Date.now() < Number(cacheExpires)) {
+          const parsed = JSON.parse(cachedData);
+          notes = parsed.notes;
+          questions = parsed.questions;
+          setNotesList(notes);
+          setQuestionsList(questions);
+          contentFetchedRef.current = true;
+          isCacheValid = true;
+        }
+      } catch (e) {
+        console.warn('Failed to parse classroom cache:', e);
+      }
+
+      if (!isCacheValid && (!contentFetchedRef.current || notesList.length === 0)) {
         const res = await fetch(`${backendUrl}/api/classroom/${classroomId}/content`, {
           headers: {
             'Authorization': student.sessionToken
@@ -648,6 +673,11 @@ export default function Workspace() {
         setNotesList(notes);
         setQuestionsList(questions);
         contentFetchedRef.current = true;
+
+        // Save to cache with randomized 5 to 8 minutes TTL
+        const jitterMs = Math.floor(300000 + Math.random() * 180000); 
+        localStorage.setItem(`classroom_content_${classroomId}`, JSON.stringify({ notes, questions }));
+        localStorage.setItem(`classroom_content_expires_${classroomId}`, String(Date.now() + jitterMs));
       }
 
       // Fetch persisted workspace from database

@@ -64,6 +64,22 @@ export default function Dashboard() {
 
     const { sessionToken } = JSON.parse(studentData);
 
+    // Check caching validity (jittered threshold between 5 and 8 minutes)
+    try {
+      const cachedData = localStorage.getItem('dashboard_cache');
+      const cacheExpires = localStorage.getItem('dashboard_cache_expires');
+      if (cachedData && cacheExpires && Date.now() < Number(cacheExpires)) {
+        const { user, classrooms, assignments } = JSON.parse(cachedData);
+        setProfile(user);
+        setClassrooms(classrooms);
+        setAssignments(assignments);
+        setLoading(false);
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to load dashboard cache:', e);
+    }
+
     try {
       const res = await fetch(`${backendUrl}/api/bootstrap`, {
         headers: {
@@ -79,13 +95,24 @@ export default function Dashboard() {
       setProfile(data.user);
       setClassrooms(data.classrooms);
 
+      let fetchedAssignments = [];
       const assRes = await fetch(`${backendUrl}/api/assignments`, {
         headers: { 'Authorization': sessionToken }
       });
       if (assRes.ok) {
         const assData = await assRes.json();
-        setAssignments(assData.assignments || []);
+        fetchedAssignments = assData.assignments || [];
+        setAssignments(fetchedAssignments);
       }
+
+      // Save to cache with randomized 5 to 8 minutes TTL to prevent thundering herd requests
+      const jitterMs = Math.floor(300000 + Math.random() * 180000); 
+      localStorage.setItem('dashboard_cache', JSON.stringify({
+        user: data.user,
+        classrooms: data.classrooms,
+        assignments: fetchedAssignments
+      }));
+      localStorage.setItem('dashboard_cache_expires', String(Date.now() + jitterMs));
     } catch (err: any) {
       setError(err.message || 'Error connecting to servers.');
     } finally {
@@ -128,6 +155,10 @@ export default function Dashboard() {
       setSuccess(`Joined classroom "${data.classroom.title}" successfully!`);
       setJoinCode('');
       
+      // Invalidate the cache to ensure we load fresh joined classrooms list
+      localStorage.removeItem('dashboard_cache');
+      localStorage.removeItem('dashboard_cache_expires');
+      
       // Refresh classroom logs
       fetchDashboardData();
     } catch (err: any) {
@@ -139,6 +170,8 @@ export default function Dashboard() {
 
   const handleLogout = () => {
     localStorage.removeItem('student');
+    localStorage.removeItem('dashboard_cache');
+    localStorage.removeItem('dashboard_cache_expires');
     router.push('/');
   };
 
