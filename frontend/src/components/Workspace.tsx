@@ -33,7 +33,8 @@ import {
   Maximize2,
   Clock,
   CheckCircle,
-  Download
+  Download,
+  FolderPlus
 } from 'lucide-react';
 import 'xterm/css/xterm.css';
 
@@ -1319,6 +1320,20 @@ export default function Workspace() {
     }
   };
 
+  // Debounced LocalStorage autosave for files and reasoning
+  useEffect(() => {
+    if (loading || !webcontainer || !classroomId || !selectedTopic) return;
+    const saveTimeout = setTimeout(() => {
+      if (Object.keys(flatFiles).length > 0) {
+        localStorage.setItem(`autosave_files_v2_${classroomId}_${selectedTopic}`, JSON.stringify(flatFiles));
+      }
+      if (reasoningAnswer) {
+        localStorage.setItem(`autosave_reasoning_${classroomId}_${selectedTopic}`, reasoningAnswer);
+      }
+    }, 1000);
+    return () => clearTimeout(saveTimeout);
+  }, [flatFiles, reasoningAnswer, classroomId, selectedTopic, loading, webcontainer]);
+
   // Periodic autosave to database (every 30 seconds)
   useEffect(() => {
     if (mode === 'test' || !student || !classroomId || !webcontainer) return;
@@ -1662,6 +1677,25 @@ export default function Workspace() {
     }
   };
 
+  const handleCreateFolder = async () => {
+    const path = prompt('Enter folder path (e.g. components or utils/helpers):');
+    if (!path) return;
+    
+    const cleanPath = path.trim().replace(/^\/+|\/+$/g, '');
+    if (!cleanPath) return;
+
+    if (webcontainerRef.current) {
+      try {
+        await webcontainerRef.current.fs.mkdir(cleanPath, { recursive: true });
+        const keepFilePath = `${cleanPath}/.gitkeep`;
+        await webcontainerRef.current.fs.writeFile(keepFilePath, '');
+      } catch (err: any) {
+        console.error('Create folder failed:', err.message);
+        alert(`Failed to create folder: ${err.message}`);
+      }
+    }
+  };
+
   const handleAddFileInFolder = async (folderPath: string) => {
     const filename = prompt(`Create file inside ${folderPath}/:`);
     if (!filename) return;
@@ -1920,28 +1954,30 @@ export default function Workspace() {
   };
 
   const renderTreeNodes = (nodes: FileNode[], depth = 0) => {
-    return nodes.map(node => {
-      const isFolder = node.type === 'folder';
-      const isExpanded = expandedFolders[node.path] ?? false;
-      const isActive = activeFilePath === node.path;
+    return nodes
+      .filter(node => node.name !== '.gitkeep')
+      .map(node => {
+        const isFolder = node.type === 'folder';
+        const isExpanded = expandedFolders[node.path] ?? false;
+        const isActive = activeFilePath === node.path;
 
-      return (
-        <div key={node.path} className="select-none">
-          <div 
-            style={{ paddingLeft: `${depth * 14 + 6}px` }}
-            className={`flex items-center justify-between py-2 hover:bg-slate-850/60 rounded-lg cursor-pointer group text-xs font-mono transition-all duration-150 ${
-              isActive 
-                ? 'bg-violet-500/10 text-violet-300 border border-violet-500/20 font-bold' 
-                : 'text-slate-350 hover:text-slate-100'
-            }`}
-            onClick={() => {
-              if (isFolder) {
-                toggleFolder(node.path);
-              } else {
-                handleFileSwitch(node.path);
-              }
-            }}
-          >
+        return (
+          <div key={node.path} className="select-none">
+            <div 
+              style={{ paddingLeft: `${depth * 14 + 6}px` }}
+              className={`flex items-center justify-between py-2 hover:bg-slate-850/60 rounded-lg cursor-pointer group text-xs font-mono transition-all duration-150 ${
+                isActive 
+                  ? 'bg-violet-500/10 text-violet-300 border border-violet-500/20 font-bold' 
+                  : 'text-slate-350 hover:text-slate-100'
+              }`}
+              onClick={() => {
+                if (isFolder) {
+                  toggleFolder(node.path);
+                } else {
+                  handleFileSwitch(node.path);
+                }
+              }}
+            >
             <div className="flex items-center gap-2 truncate">
               {isFolder ? (
                 <>
@@ -2338,6 +2374,13 @@ export default function Workspace() {
                                 <Plus className="w-3.5 h-3.5" />
                               </button>
                               <button 
+                                onClick={handleCreateFolder} 
+                                className="p-1 hover:bg-slate-850 hover:text-violet-400 text-slate-455 rounded transition-colors" 
+                                title="New Folder"
+                              >
+                                <FolderPlus className="w-3.5 h-3.5" />
+                              </button>
+                              <button 
                                 onClick={() => setExplorerOpen(false)} 
                                 className="p-1 hover:bg-slate-855 hover:text-violet-400 text-slate-455 rounded transition-colors" 
                                 title="Collapse Tree"
@@ -2478,6 +2521,13 @@ export default function Workspace() {
                               title="New Root File"
                             >
                               <Plus className="w-3.5 h-3.5" />
+                            </button>
+                            <button 
+                              onClick={handleCreateFolder} 
+                              className="p-1 hover:bg-slate-850 hover:text-violet-400 text-slate-450 rounded transition-colors" 
+                              title="New Folder"
+                            >
+                              <FolderPlus className="w-3.5 h-3.5" />
                             </button>
                             <button 
                               onClick={() => setExplorerOpen(false)} 
