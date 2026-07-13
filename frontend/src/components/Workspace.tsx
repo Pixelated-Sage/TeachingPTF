@@ -3007,7 +3007,7 @@ export default function Workspace() {
                   </div>
 
                   {/* Submit Action Block - only show when there is an active question to submit */}
-                  {activeQuestion && (
+                  {activeQuestion && activeTest && (
                     <div className="p-4 bg-slate-900 border-t border-slate-800 shrink-0">
                       <button
                         onClick={handleSubmitSolution}
