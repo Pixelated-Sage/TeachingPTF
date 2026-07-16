@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS Assignments (
     status VARCHAR(50) DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'closed')),
     open_at TIMESTAMP,
     close_at TIMESTAMP,
+    workspace_template VARCHAR(50) DEFAULT 'node',
+    options JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

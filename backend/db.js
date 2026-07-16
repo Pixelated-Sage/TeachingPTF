@@ -1,5 +1,5 @@
 // backend/db.js
-// Supabase PostgreSQL Connection Pool wrapper.
+// Neon PostgreSQL Connection Pool wrapper.
 
 const { Pool } = require('pg');
 require('dotenv').config();
@@ -13,12 +13,11 @@ if (!connectionString) {
 
 const pool = new Pool({
   connectionString,
-  // Explicit pool sizing to prevent connection exhaustion on Supabase (max ~25 connections).
-  // With 10 max connections per process, a single PM2 cluster of 2 instances uses at most 20
-  // connections, leaving 5 for admin tooling and migrations.
+  ssl: { rejectUnauthorized: false }, // Required for Neon TLS connections
+  // Neon uses a pooler by default; keep max connections reasonable.
   max: 10,
   idleTimeoutMillis: 30000,     // release idle connections after 30s
-  connectionTimeoutMillis: 5000 // fail fast if pool is exhausted (5s timeout)
+  connectionTimeoutMillis: 10000 // Neon can have cold starts, allow 10s
 });
 
 pool.on('connect', () => {

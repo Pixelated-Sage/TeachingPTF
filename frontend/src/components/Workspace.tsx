@@ -231,12 +231,16 @@ export default function Workspace() {
   const [liveSessionActive, setLiveSessionActive] = useState(false);
   const [activeTest, setActiveTest] = useState<any>(null);
   const [activeAssignment, setActiveAssignment] = useState<any>(null);
+  const isStrictTestEnv = mode === 'test' || (mode === 'assignment' && activeAssignment?.options?.strictTestMode);
+  const requireCode = mode === 'assignment' ? (activeAssignment?.options?.requireCode ?? true) : true;
+  const requireReasoning = mode === 'assignment' ? (activeAssignment?.options?.requireReasoning ?? true) : true;
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [testTimeLeft, setTestTimeLeft] = useState(300); // 5 minutes default per test question
   
   const [quickQuestion, setQuickQuestion] = useState<string | null>(null);
   const [quickQuestionTimeLeft, setQuickQuestionTimeLeft] = useState(90); // 1.5 minutes default
   const [quickQuestionId, setQuickQuestionId] = useState<string | null>(null);
+  const [qqDurationSeconds, setQqDurationSeconds] = useState(90); // total duration for timeTakenSeconds calculation
   const [qqCode, setQqCode] = useState('// Write your JavaScript solution here...');
   const [mainFilesBackup, setMainFilesBackup] = useState<Record<string, string> | null>(null);
   const [qqReasoning, setQqReasoning] = useState('');
@@ -263,7 +267,18 @@ export default function Workspace() {
   const [isResizingTask, setIsResizingTask] = useState(false);
 
   // File Tree Explorer State
-  const [flatFiles, setFlatFiles] = useState<Record<string, string>>({});
+  const [flatFiles, _setFlatFiles] = useState<Record<string, string>>({});
+  // Mirror of flatFiles state in a ref so async closures (e.g. triggerShellsOnBoot)
+  // always read the latest files instead of a stale snapshot from when the closure was created.
+  const flatFilesRef = useRef<Record<string, string>>({});
+  // Wrapper that keeps flatFilesRef in sync every time state changes
+  const setFlatFilesAndRef = (files: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>)) => {
+    _setFlatFiles(prev => {
+      const next = typeof files === 'function' ? (files as (p: Record<string, string>) => Record<string, string>)(prev) : files;
+      flatFilesRef.current = next;
+      return next;
+    });
+  };
   const [activeFilePath, setActiveFilePath] = useState<string>('index.js');
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   
@@ -305,6 +320,9 @@ export default function Workspace() {
   // Submission deduplication refs: prevent multi-click duplicate submissions
   const isSubmittingRef = useRef<boolean>(false);
   const isSubmittingQQRef = useRef<boolean>(false);
+  // QQ Mount Lock: When true, the FS watcher will NOT overwrite flatFiles.
+  // Set synchronously (ref, not state) when mounting QQ files, cleared after WC mount completes.
+  const qqMountLockRef = useRef<boolean>(false);
 
   // Dynamic Multiple Terminals State
   const [terminalTabs, setTerminalTabs] = useState<{ id: string; label: string }[]>([
@@ -335,32 +353,6 @@ export default function Workspace() {
     setStudent(parsed);
     setStartTime(Date.now());
   }, [router, classroomId]);
-
-  // 2. Fetch classroom Live/Test active status (ONE-TIME on mount only)
-  // After this initial fetch, live status updates arrive via the 'classroom:live_status' socket event.
-  // We do NOT poll repeatedly — this eliminates the continuous 5-second API hit flood.
-  useEffect(() => {
-    if (!student || !classroomId) return;
-
-    const getStatus = async () => {
-      try {
-        const res = await fetch(`${backendUrl}/api/classroom/${classroomId}/status`);
-        if (res.ok) {
-          const data = await res.json();
-          setLiveSessionActive(data.liveSessionActive);
-          setActiveTest(data.activeTest);
-          setBackendConnected(true);
-        } else {
-          setBackendConnected(false);
-        }
-      } catch (err) {
-        setBackendConnected(false);
-        console.error('Failed to retrieve classroom mode status:', err);
-      }
-    };
-
-    getStatus(); // Single fetch on mount — no recurring interval
-  }, [student, classroomId]);
 
   // 3. Connect Socket.io client unconditionally on classroom entry
   // Socket is ALWAYS connected so students receive live_status, quick_question, and notes_updated
@@ -429,6 +421,7 @@ export default function Workspace() {
       setQuickQuestionId(data.questionId);
       setQuickQuestion(data.questionText);
       setQuickQuestionTimeLeft(data.durationSeconds);
+      setQqDurationSeconds(data.durationSeconds); // store total duration
       
       // Backup main files directly from WebContainer disk to avoid stale state
       let backupFiles = flatFiles;
@@ -447,22 +440,42 @@ export default function Workspace() {
       
       // Load selected sandbox template
       const templateName = data.template || 'node';
-      const templateFiles = QQ_TEMPLATES[templateName] || QQ_TEMPLATES.node;
-      setFlatFiles(templateFiles);
       
-      const initialActiveFile = templateName === 'react' ? 'src/App.jsx' : templateName === 'html' ? 'index.html' : 'index.js';
-      setActiveFilePath(initialActiveFile);
-      setCode(templateFiles[initialActiveFile]);
-      
-      // Mount inside WebContainer
-      if (webcontainerRef.current) {
-        try {
-          const nested = buildWebContainerFiles(templateFiles);
-          await webcontainerRef.current.mount(nested);
-          console.log(`Successfully booted isolated Quick Question sandbox: ${templateName}`);
-        } catch (e) {
-          console.error('Failed to mount quick question sandbox:', e);
+      if (templateName === 'current') {
+        // Preserve current workspace files as the starting point for the quiz
+        console.log('Quick Question using current live codebase.');
+      } else {
+        let templateFiles;
+        let initialActiveFile = 'index.js';
+        
+        if (templateName === 'empty') {
+          templateFiles = { 'README.md': '# Scratchpad\n\nWrite your solution here.\n' };
+          initialActiveFile = 'README.md';
+        } else {
+          templateFiles = QQ_TEMPLATES[templateName] || QQ_TEMPLATES.node;
+          initialActiveFile = templateName === 'react' ? 'src/App.jsx' : templateName === 'html' ? 'index.html' : 'index.js';
         }
+        
+        // Lock out FS watcher BEFORE setting any state, and set ref imperatively
+        qqMountLockRef.current = true;
+        flatFilesRef.current = templateFiles;
+        setFlatFilesAndRef(templateFiles);
+        setActiveFilePath(initialActiveFile);
+        setCode(templateFiles[initialActiveFile]);
+        
+        // Mount inside WebContainer
+        if (webcontainerRef.current) {
+          try {
+            const nested = buildWebContainerFiles(templateFiles);
+            await webcontainerRef.current.mount(nested);
+            qqMountLockRef.current = false;
+            console.log(`Successfully booted isolated Quick Question sandbox: ${templateName}`);
+          } catch (e) {
+            qqMountLockRef.current = false;
+            console.error('Failed to mount quick question sandbox:', e);
+          }
+        }
+        // If no WC yet, lock will be released in triggerShellsOnBoot
       }
       
       alert(`Instructor pushed a Quick Question (${templateName} environment)! You have ${data.durationSeconds}s.`);
@@ -526,6 +539,16 @@ export default function Workspace() {
       }
     });
 
+    socket.on('classroom:assignment_live', (data: { id: string; title: string; assignedTo?: string[] | null }) => {
+      if (data.assignedTo && student && !data.assignedTo.includes(student.id)) {
+        return; // Not assigned to this student
+      }
+      
+      if (confirm(`New Assignment is live: "${data.title}"!\nDo you want to start it now?`)) {
+        window.location.href = `/classroom?id=${classroomId}&mode=assignment&assignmentId=${data.id}`;
+      }
+    });
+
     return () => {
       socket.disconnect();
       socketInstance.current = null;
@@ -542,7 +565,7 @@ export default function Workspace() {
       socket: null, // Pass null to prevent immediate socket emits from analyzerRules.ts
       studentId: student.id,
       classroomId,
-      isTest: mode === 'test'
+      isTest: isStrictTestEnv
     };
 
     // 1. Monitor tab switches
@@ -552,7 +575,7 @@ export default function Workspace() {
       pendingMishapsRef.current.push({
         type: 'tab_switch',
         timestamp: Date.now(),
-        isTest: mode === 'test'
+        isTest: isStrictTestEnv
       });
     });
 
@@ -564,7 +587,7 @@ export default function Workspace() {
       pendingMishapsRef.current.push({
         type: 'paste_attempt',
         timestamp: Date.now(),
-        isTest: mode === 'test'
+        isTest: isStrictTestEnv
       });
       return true; // Block the paste!
     });
@@ -577,7 +600,7 @@ export default function Workspace() {
         pendingMishapsRef.current.push({
           type: 'inactivity',
           timestamp: Date.now(),
-          isTest: mode === 'test'
+          isTest: isStrictTestEnv
         });
       } else {
         setIdleStartTime(null);
@@ -692,6 +715,109 @@ export default function Workspace() {
     setActiveNote(null); // Clear previous note immediately to avoid displaying stale data
     setNotesLoading(true);
     try {
+      // 1. Fetch status first to check for active Quick Question before restoring workspace files
+      let activeQQ = null;
+      try {
+        const res = await fetch(`${backendUrl}/api/classroom/${classroomId}/status?t=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { 'Authorization': student.sessionToken }
+        });
+        if (res.status === 403) {
+          alert('You have been removed from this classroom.');
+          router.push('/dashboard');
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          console.log('[QQ-DEBUG] Raw status response:', JSON.stringify(data));
+          console.log('[QQ-DEBUG] data.activeQuickQuestion:', data.activeQuickQuestion);
+          console.log('[QQ-DEBUG] typeof data.activeQuickQuestion:', typeof data.activeQuickQuestion);
+          setLiveSessionActive(data.liveSessionActive);
+          setActiveTest(data.activeTest);
+          setBackendConnected(true);
+          if (data.activeQuickQuestion) {
+            activeQQ = data.activeQuickQuestion;
+            console.log('[QQ-DEBUG] ✅ activeQQ set to:', activeQQ);
+            setQuickQuestionId(activeQQ.questionId);
+            setQuickQuestion(activeQQ.questionText);
+            setQuickQuestionTimeLeft(activeQQ.timeLeft);
+            setQqDurationSeconds(activeQQ.timeLeft);
+          } else {
+            console.log('[QQ-DEBUG] ❌ data.activeQuickQuestion is falsy — no QQ will be shown');
+          }
+        } else {
+          console.log('[QQ-DEBUG] ❌ Status response not OK:', res.status);
+          setBackendConnected(false);
+        }
+      } catch (err) {
+        setBackendConnected(false);
+        console.error('[QQ-DEBUG] ❌ Failed status check:', err);
+      }
+      console.log('[QQ-DEBUG] After status check, activeQQ =', activeQQ);
+
+      // If Quick Question is active, restore draft or load fresh template — skip normal workspace restoration
+      if (activeQQ) {
+        console.log('[DEBUG] Activating Quick Question Workspace UI & Files');
+
+        // Lock out the FS watcher BEFORE setting any state — this is a synchronous ref
+        // update so it takes effect immediately, no React commit phase delay.
+        qqMountLockRef.current = true;
+
+        // Check for a saved draft first (student may have reloaded mid-QQ)
+        const draftKey = `qq_draft_${classroomId}_${activeQQ.questionId}`;
+        const savedDraft = localStorage.getItem(draftKey);
+
+        // Determine the files to load (draft or fresh template)
+        let qqFilesToMount: Record<string, string> | null = null;
+        let qqActiveFile = 'index.js';
+
+        if (savedDraft) {
+          try {
+            const draft = JSON.parse(savedDraft);
+            if (draft.files && Object.keys(draft.files).length > 0) {
+              qqFilesToMount = draft.files;
+              const filesList = Object.keys(draft.files);
+              qqActiveFile = filesList[0] || 'index.js';
+            }
+            if (draft.reasoning !== undefined) {
+              setQqReasoning(draft.reasoning);
+            }
+            console.log('[QQ] fetchClassroomContent: Restored draft from localStorage for question:', activeQQ.questionId);
+          } catch (e) {
+            console.warn('[QQ] Failed to parse draft in fetchClassroomContent, loading fresh template:', e);
+            localStorage.removeItem(draftKey);
+          }
+        }
+
+        // If no draft was restored, load a fresh template
+        if (!qqFilesToMount) {
+          const templateName = activeQQ.template || 'node';
+          if (templateName !== 'current') {
+            if (templateName === 'empty') {
+              qqFilesToMount = { 'README.md': '# Scratchpad\n\nWrite your solution here.\n' };
+              qqActiveFile = 'README.md';
+            } else {
+              qqFilesToMount = QQ_TEMPLATES[templateName] || QQ_TEMPLATES.node;
+              qqActiveFile = templateName === 'react' ? 'src/App.jsx' : templateName === 'html' ? 'index.html' : 'index.js';
+            }
+          }
+        }
+
+        // Set the ref IMPERATIVELY (bypass React state commit timing)
+        // so triggerShellsOnBoot reads the correct files immediately.
+        if (qqFilesToMount) {
+          flatFilesRef.current = qqFilesToMount;
+          setFlatFilesAndRef(qqFilesToMount);
+          setActiveFilePath(qqActiveFile);
+          setCode(qqFilesToMount[qqActiveFile] || '');
+        }
+
+        setNotesLoading(false);
+        setLoading(false);
+        // Lock will be released in triggerShellsOnBoot after wc.mount() completes
+        return;
+      }
+
       let notes = notesList;
       let questions = questionsList;
       let isCacheValid = false;
@@ -726,6 +852,11 @@ export default function Workspace() {
             'Authorization': student.sessionToken
           }
         });
+        if (res.status === 403) {
+          alert('You have been removed from this classroom.');
+          router.push('/dashboard');
+          return;
+        }
         if (!res.ok) throw new Error('Failed to fetch classroom content');
         const data = await res.json();
         notes = data.notes;
@@ -762,6 +893,16 @@ export default function Workspace() {
       const topicQuestion = questions.find((q: QuestionData) => Number(q.topicNumber) === Number(selectedTopic));
       setActiveNote(topicNotes || null);
       
+      let filesToLoad = null;
+      const cachedTree = localStorage.getItem(`autosave_files_v2_${classroomId}_${selectedTopic}`);
+      if (dbFiles && typeof dbFiles === 'object') {
+        filesToLoad = dbFiles;
+      } else if (cachedTree !== null) {
+        filesToLoad = JSON.parse(cachedTree);
+      }
+
+      let loadedAssTemplate = 'node';
+      
       if (mode === 'assignment') {
         try {
           const assRes = await fetch(`${backendUrl}/api/assignments`, {
@@ -771,6 +912,7 @@ export default function Workspace() {
             const assData = await assRes.json();
             const ass = assData.assignments.find((a: any) => a.id === assignmentId);
             if (ass) {
+              loadedAssTemplate = ass.workspace_template || 'node';
               ass.questions = (ass.questions || []).map((q: any) => ({
                 id: q.id,
                 codeTaskPrompt: q.code_task_prompt !== undefined ? q.code_task_prompt : q.codeTaskPrompt,
@@ -807,24 +949,29 @@ export default function Workspace() {
           console.error('Failed to load assignment detail:', e);
         }
 
-        const cleanTree = {
-          'package.json': JSON.stringify({
-            name: 'assignment-sandbox',
-            type: 'module',
-            dependencies: {
-              'express': '^4.19.2'
-            },
-            scripts: {
-              'start': 'node index.js'
-            }
-          }, null, 2),
-          'index.js': '// Start assignment question solution here\n\n'
-        };
-        setFlatFiles(cleanTree);
-        setActiveFilePath('index.js');
-        setCode(cleanTree['index.js']);
-      } else if (mode === 'test') {
-        // Test Mode: isolated, fresh environment. Questions loaded sequentially.
+        if (loadedAssTemplate === 'current') {
+          console.log('Assignment using current live codebase.');
+          if (filesToLoad !== null) {
+            setFlatFilesAndRef(filesToLoad);
+            const paths = Object.keys(filesToLoad);
+            const nextActive = paths.includes('index.js') ? 'index.js' : paths[0] || 'index.js';
+            setActiveFilePath(nextActive);
+            setCode(filesToLoad[nextActive] || '');
+          }
+        } else if (loadedAssTemplate === 'empty') {
+          const emptyTree = { 'README.md': '# Scratchpad\n\nWrite your assignment solution here.\n' };
+          setFlatFilesAndRef(emptyTree);
+          setActiveFilePath('README.md');
+          setCode(emptyTree['README.md']);
+        } else {
+          const templateFiles = QQ_TEMPLATES[loadedAssTemplate] || QQ_TEMPLATES.node;
+          setFlatFilesAndRef(templateFiles);
+          const initialActiveFile = loadedAssTemplate === 'react' ? 'src/App.jsx' : loadedAssTemplate === 'html' ? 'index.html' : 'index.js';
+          setActiveFilePath(initialActiveFile);
+          setCode(templateFiles[initialActiveFile]);
+        }
+      } else if (isStrictTestEnv || activeTest !== null) {
+        // Test Mode / Live Test: isolated, fresh environment. Questions loaded sequentially.
         setActiveQuestion(questions[currentQuestionIndex] || null);
         localStorage.removeItem(`autosave_files_v2_${classroomId}_${selectedTopic}`);
         localStorage.removeItem(`autosave_reasoning_${classroomId}_${selectedTopic}`);
@@ -842,26 +989,20 @@ export default function Workspace() {
           }, null, 2),
           'index.js': '// Start fresh test question solution here\n\n'
         };
-        setFlatFiles(cleanTree);
+        setFlatFilesAndRef(cleanTree);
         setActiveFilePath('index.js');
         setCode(cleanTree['index.js']);
       } else {
         // Live Mode: restore code states from cache (DB first, then localStorage)
         setActiveQuestion(topicQuestion || null);
-        const cachedTree = localStorage.getItem(`autosave_files_v2_${classroomId}_${selectedTopic}`);
         const cachedReasoning = localStorage.getItem(`autosave_reasoning_${classroomId}_${selectedTopic}`);
         
-        let filesToLoad = null;
-        if (dbFiles && typeof dbFiles === 'object') {
-          filesToLoad = dbFiles;
-          console.log('Restoring workspace files from database.');
-        } else if (cachedTree !== null) {
-          filesToLoad = JSON.parse(cachedTree);
-          console.log('Restoring workspace files from local browser cache.');
+        if (filesToLoad !== null) {
+          console.log('Restoring workspace files from storage.');
         }
 
         if (filesToLoad !== null) {
-          setFlatFiles(filesToLoad);
+          setFlatFilesAndRef(filesToLoad);
           const paths = Object.keys(filesToLoad);
           const nextActive = paths.includes('index.js') ? 'index.js' : paths[0] || 'index.js';
           setActiveFilePath(nextActive);
@@ -880,7 +1021,7 @@ export default function Workspace() {
             }, null, 2),
             'index.js': '// Write your javascript solution here\n\n'
           };
-          setFlatFiles(defaultTree);
+          setFlatFilesAndRef(defaultTree);
           setActiveFilePath('index.js');
           setCode(defaultTree['index.js']);
         }
@@ -925,7 +1066,7 @@ export default function Workspace() {
 
   const handleAutoSubmitTestQuestion = async () => {
     await handleSubmitSolution();
-    if (mode === 'test') {
+    if (isStrictTestEnv || activeTest !== null) {
       if (currentQuestionIndex < questionsList.length - 1) {
         setCurrentQuestionIndex(prev => prev + 1);
         setTestTimeLeft(300); // 5 minutes for next question
@@ -934,6 +1075,14 @@ export default function Workspace() {
       }
     }
   };
+
+  // QQ Draft auto-save — persist student's work-in-progress so it survives a page reload
+  useEffect(() => {
+    if (!quickQuestionId || !classroomId) return;
+    const draftKey = `qq_draft_${classroomId}_${quickQuestionId}`;
+    const draft = { files: flatFiles, reasoning: qqReasoning };
+    localStorage.setItem(draftKey, JSON.stringify(draft));
+  }, [flatFiles, qqReasoning, quickQuestionId, classroomId]);
 
   // Quick Question timer countdown
   useEffect(() => {
@@ -1248,8 +1397,16 @@ export default function Workspace() {
   };
 
   const triggerShellsOnBoot = async (wc: WebContainer) => {
-    const nestedFiles = buildWebContainerFiles(flatFiles);
+    // Use flatFilesRef.current (not flatFiles state) to avoid stale closure —
+    // bootWebContainerInstance is called from a useEffect([loading]) which fires before
+    // React flushes state updates from fetchClassroomContent.
+    const latestFiles = flatFilesRef.current;
+    const nestedFiles = buildWebContainerFiles(latestFiles);
     await wc.mount(nestedFiles);
+
+    // Release the QQ mount lock now that files are on disk.
+    // The next FS watcher scan will see the correct files (no-op overwrite).
+    qqMountLockRef.current = false;
 
     for (const [tabId, term] of Object.entries(terminalsRef.current)) {
       await startShellForTab(tabId, term);
@@ -1296,7 +1453,12 @@ export default function Workspace() {
         try {
           const diskFiles = await scanDirectory(webcontainer);
           
-          setFlatFiles(prev => {
+          setFlatFilesAndRef(prev => {
+            // When QQ mount lock is active, do NOT overwrite files from disk —
+            // the QQ template/draft files are the authoritative source.
+            if (qqMountLockRef.current) {
+              return prev;
+            }
             const hasChanged = JSON.stringify(prev) !== JSON.stringify(diskFiles);
             if (hasChanged) {
               const isEditorFocused = document.activeElement?.className?.includes('inputarea') || document.activeElement?.id === 'main-code-editor';
@@ -1325,7 +1487,10 @@ export default function Workspace() {
         }
         triggerScan();
       });
-      triggerScan();
+      // Skip initial scan if QQ mount lock is active — the QQ files are authoritative
+      if (!qqMountLockRef.current) {
+        triggerScan();
+      }
     } catch (e) {
       console.error('Failed to register fs watcher:', e);
     }
@@ -1355,7 +1520,7 @@ export default function Workspace() {
 
   // Helper: autosave active workspace to database
   const autosaveWorkspaceToDB = async () => {
-    if (!student || !classroomId || !webcontainerRef.current || mode === 'test') return;
+    if (!student || !classroomId || !webcontainerRef.current || isStrictTestEnv || activeTest !== null || (!isStrictTestEnv && mode === 'assignment') || quickQuestionId !== null) return;
     try {
       const diskFiles = await scanDirectory(webcontainerRef.current);
       if (Object.keys(diskFiles).length === 0) return;
@@ -1711,10 +1876,10 @@ export default function Workspace() {
     const payload = {
       classroomId,
       questionId: quickQuestionId,
-      code: qqCode,
-      codeOutput: 'Submitted via Quick Question pop-quiz.',
+      code: JSON.stringify(flatFiles),
+      codeOutput: previewUrl ? `Server running at: ${previewUrl}` : 'Submitted via Quick Question pop-quiz.',
       reasoningAnswer: qqReasoning,
-      timeTakenSeconds: 90 - quickQuestionTimeLeft,
+      timeTakenSeconds: qqDurationSeconds - quickQuestionTimeLeft,
       tabSwitchCount,
       headingsReached,
       dwellSeconds: {},
@@ -1740,7 +1905,7 @@ export default function Workspace() {
       alert(`Error submitting quick question: ${err.message}`);
     } finally {
       if (mainFilesBackup && webcontainer) {
-        setFlatFiles(mainFilesBackup);
+        setFlatFilesAndRef(mainFilesBackup);
         const backupNested = buildWebContainerFiles(mainFilesBackup);
         try {
           await webcontainer.mount(backupNested);
@@ -1754,11 +1919,17 @@ export default function Workspace() {
         setCode(mainFilesBackup[nextActive] || '');
         setMainFilesBackup(null);
       }
+      // Clear the localStorage draft now that submission is complete
+      if (classroomId && quickQuestionId) {
+        localStorage.removeItem(`qq_draft_${classroomId}_${quickQuestionId}`);
+      }
       setQuickQuestionId(null);
       setQuickQuestion(null);
+      setQqDurationSeconds(90);
       setQqCode('// Write your JavaScript solution here...');
       setQqReasoning('');
       isSubmittingQQRef.current = false;
+      qqMountLockRef.current = false; // Ensure lock is released when QQ ends
     }
   };
 
@@ -1778,7 +1949,7 @@ export default function Workspace() {
 
   // File explorer functions
   const handleFileSwitch = (path: string) => {
-    setFlatFiles(prev => {
+    setFlatFilesAndRef(prev => {
       const updated = { ...prev, [activeFilePath]: code };
       return updated;
     });
@@ -2212,7 +2383,7 @@ export default function Workspace() {
             <span className="text-white font-extrabold text-sm">L</span>
           </div>
           <span className="font-bold text-slate-100 hidden sm:inline-block">
-            {mode === 'test' ? 'Classroom Exam Space' : 'Live Classroom Workspace'}
+            {isStrictTestEnv ? 'Classroom Exam Space' : 'Live Classroom Workspace'}
           </span>
           
           {/* Live Status Badge — shows live/offline state directly in the header */}
@@ -2417,13 +2588,14 @@ export default function Workspace() {
         )}
 
         {/* 2. Center WebContainer Editor + Execution Panel */}
-        <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden relative h-full">
-          {previewFullscreen ? (
-            <div className="absolute inset-0 z-50 bg-slate-950 flex flex-col">
-              {/* Fullscreen header */}
-              <div className="flex items-center justify-between bg-slate-900 border-b border-slate-800 p-3 shrink-0">
-                <div className="flex items-center gap-2 text-slate-350 text-xs font-bold uppercase tracking-wider">
-                  <Globe className="w-4 h-4 text-violet-400 animate-pulse" />
+        {requireCode ? (
+          <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden relative h-full">
+            {previewFullscreen ? (
+              <div className="absolute inset-0 z-50 bg-slate-950 flex flex-col">
+                {/* Fullscreen header */}
+                <div className="flex items-center justify-between bg-slate-900 border-b border-slate-800 p-3 shrink-0">
+                  <div className="flex items-center gap-2 text-slate-350 text-xs font-bold uppercase tracking-wider">
+                    <Globe className="w-4 h-4 text-violet-400 animate-pulse" />
                   <span>Live App Viewport (Fullscreen Mode)</span>
                 </div>
                 <button
@@ -2860,6 +3032,15 @@ export default function Workspace() {
             </>
           )}
         </div>
+      ) : (
+        <div className="flex-1 flex flex-col min-w-0 bg-slate-950 items-center justify-center text-slate-500">
+          <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 mb-4 flex items-center justify-center shadow-lg">
+             <span className="text-2xl">📝</span>
+          </div>
+          <h2 className="text-xl font-bold text-slate-400">Code Workspace Not Required</h2>
+          <p className="mt-2 text-sm max-w-sm text-center leading-relaxed">This assignment focuses on conceptual reasoning. Please refer to the Task Panel on the right to read the prompt and submit your answer.</p>
+        </div>
+      )}
 
         {/* 3. Right Question + Reasoning Panel */}
         {taskOpen ? (
@@ -3068,82 +3249,84 @@ export default function Workspace() {
                           {activeQuestion!.codeTaskPrompt && (
                             <div>
                               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Coding Challenge</h3>
-                              <p className="text-sm text-slate-200 leading-relaxed bg-slate-950 p-4 border border-slate-800 rounded-lg">
-                                {activeQuestion!.codeTaskPrompt}
-                              </p>
+                              <div className="text-sm text-slate-200 leading-relaxed bg-slate-950 p-4 border border-slate-800 rounded-lg">
+                                {parseMarkdown(activeQuestion!.codeTaskPrompt)}
+                              </div>
                             </div>
                           )}
 
-                          <div>
-                            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Reasoning Prompt</h3>
-                            <p className="text-sm text-slate-200 leading-relaxed bg-slate-950 p-4 border border-slate-800 rounded-lg mb-4">
-                              {activeQuestion!.reasoningPrompt}
-                            </p>
-
-                            {/* Reasoning choices input */}
-                            {activeQuestion!.reasoningType === 'mcq' ? (
-                              <div className="space-y-2.5">
-                                {activeQuestion!.options?.map((opt: string, i: number) => (
-                                  <label 
-                                    key={i} 
-                                    className={`flex items-center gap-3 p-3 bg-slate-950 border rounded-lg cursor-pointer transition-all duration-200 text-sm ${
-                                      reasoningAnswer === opt 
-                                        ? 'border-violet-500 text-slate-100 bg-violet-950/20' 
-                                        : 'border-slate-800 text-slate-300 hover:border-slate-700'
-                                    }`}
-                                  >
-                                    <input
-                                      type="radio"
-                                      name="mcq"
-                                      value={opt}
-                                      checked={reasoningAnswer === opt}
-                                      onChange={(e) => setReasoningAnswer(e.target.value)}
-                                      className="text-violet-600 focus:ring-0 focus:ring-offset-0 bg-slate-955 border-slate-800"
-                                    />
-                                    <span>{opt}</span>
-                                  </label>
-                                ))}
+                          {requireReasoning && (
+                            <div>
+                              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Reasoning Prompt</h3>
+                              <div className="text-sm text-slate-200 leading-relaxed bg-slate-950 p-4 border border-slate-800 rounded-lg mb-4">
+                                {parseMarkdown(activeQuestion!.reasoningPrompt)}
                               </div>
-                            ) : activeQuestion!.reasoningType === 'multi_select' ? (
-                              <div className="space-y-2.5">
-                                {activeQuestion!.options?.map((opt: string, i: number) => {
-                                  const answers = reasoningAnswer ? reasoningAnswer.split(', ') : [];
-                                  const checked = answers.includes(opt);
-                                  return (
+
+                              {/* Reasoning choices input */}
+                              {activeQuestion!.reasoningType === 'mcq' ? (
+                                <div className="space-y-2.5">
+                                  {activeQuestion!.options?.map((opt: string, i: number) => (
                                     <label 
                                       key={i} 
-                                      className={`flex items-center gap-3 p-3 bg-slate-955 border rounded-lg cursor-pointer transition-all duration-200 text-sm ${
-                                        checked 
-                                          ? 'border-violet-500 text-slate-100 bg-violet-955/20' 
+                                      className={`flex items-center gap-3 p-3 bg-slate-950 border rounded-lg cursor-pointer transition-all duration-200 text-sm ${
+                                        reasoningAnswer === opt 
+                                          ? 'border-violet-500 text-slate-100 bg-violet-950/20' 
                                           : 'border-slate-800 text-slate-300 hover:border-slate-700'
                                       }`}
                                     >
                                       <input
-                                        type="checkbox"
+                                        type="radio"
+                                        name="mcq"
                                         value={opt}
-                                        checked={checked}
-                                        onChange={(e) => {
-                                          const nextAnswers = e.target.checked
-                                            ? [...answers, opt]
-                                            : answers.filter(a => a !== opt);
-                                          setReasoningAnswer(nextAnswers.join(', '));
-                                        }}
-                                        className="text-violet-605 rounded focus:ring-0 focus:ring-offset-0 bg-slate-950 border-slate-800"
+                                        checked={reasoningAnswer === opt}
+                                        onChange={(e) => setReasoningAnswer(e.target.value)}
+                                        className="text-violet-600 focus:ring-0 focus:ring-offset-0 bg-slate-955 border-slate-800"
                                       />
                                       <span>{opt}</span>
                                     </label>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <textarea
-                                placeholder="Write your reasoning or answer logic explanation here..."
-                                value={reasoningAnswer}
-                                onChange={(e) => setReasoningAnswer(e.target.value)}
-                                className="w-full min-h-[120px] p-4 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-xs focus:outline-none resize-none"
-                              />
-                            )}
-                          </div>
+                                  ))}
+                                </div>
+                              ) : activeQuestion!.reasoningType === 'multi_select' ? (
+                                <div className="space-y-2.5">
+                                  {activeQuestion!.options?.map((opt: string, i: number) => {
+                                    const answers = reasoningAnswer ? reasoningAnswer.split(', ') : [];
+                                    const checked = answers.includes(opt);
+                                    return (
+                                      <label 
+                                        key={i} 
+                                        className={`flex items-center gap-3 p-3 bg-slate-955 border rounded-lg cursor-pointer transition-all duration-200 text-sm ${
+                                          checked 
+                                            ? 'border-violet-500 text-slate-100 bg-violet-955/20' 
+                                            : 'border-slate-800 text-slate-300 hover:border-slate-700'
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          value={opt}
+                                          checked={checked}
+                                          onChange={(e) => {
+                                            const nextAnswers = e.target.checked
+                                              ? [...answers, opt]
+                                              : answers.filter(a => a !== opt);
+                                            setReasoningAnswer(nextAnswers.join(', '));
+                                          }}
+                                          className="text-violet-605 rounded focus:ring-0 focus:ring-offset-0 bg-slate-950 border-slate-800"
+                                        />
+                                        <span>{opt}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <textarea
+                                  placeholder="Write your reasoning or answer logic explanation here..."
+                                  value={reasoningAnswer}
+                                  onChange={(e) => setReasoningAnswer(e.target.value)}
+                                  className="w-full min-h-[120px] p-4 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-xs focus:outline-none resize-none"
+                                />
+                              )}
+                            </div>
+                          )}
                         </>
                       ) : (
                         <div className="text-center text-slate-400 py-10 text-sm flex flex-col items-center gap-4 bg-slate-950/40 p-6 border border-slate-850 rounded-xl">

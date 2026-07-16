@@ -7,7 +7,7 @@
 // Premium dark-slate theme with glassmorphism card layouts, subtle indigo/violet
 // gradient backdrops, and active micro-animations.
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 type AuthMode = 'login' | 'register' | 'verify';
 
@@ -35,6 +35,21 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
 
   const backendUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+
+  // Auto-redirect if already logged in
+  useEffect(() => {
+    const stored = localStorage.getItem('student');
+    if (stored) {
+      try {
+        const { sessionToken, expiresAt } = JSON.parse(stored);
+        if (sessionToken && (!expiresAt || new Date(expiresAt) > new Date())) {
+          window.location.href = '/dashboard';
+        }
+      } catch {}
+    }
+  }, []);
+
+  const [rememberMe, setRememberMe] = useState(true);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -148,12 +163,17 @@ export default function AuthPage() {
       if (!res.ok) throw new Error(data.error || 'Login failed.');
 
       // Store student profiles + session tokens in localStorage
+      // If rememberMe: 30 days; else: session only (cleared when browser closes)
+      const expiresAt = rememberMe
+        ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        : null;
       localStorage.setItem('student', JSON.stringify({
         id: data.id,
         name: data.name,
         rollNumber: data.rollNumber,
         email: data.email,
         sessionToken: data.sessionToken,
+        expiresAt,
       }));
 
       // Redirect to the new student Dashboard view
@@ -261,6 +281,17 @@ export default function AuthPage() {
               />
             </div>
 
+            {/* Remember Me */}
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded accent-violet-500 cursor-pointer"
+              />
+              <span className="text-xs text-slate-400">Remember me for 30 days</span>
+            </label>
+
             <button
               type="submit"
               disabled={loading}
@@ -270,6 +301,7 @@ export default function AuthPage() {
             </button>
           </form>
         )}
+
 
         {mode === 'register' && (
           <form onSubmit={handleRegister} className="space-y-4">

@@ -713,7 +713,11 @@ const notesCache = new Map();
 const statusCache = new Map();
 const assignmentsCache = new Map();
 
-// 6. Get Classroom Content (Notes + Questions together in ONE call)
+// NOTE: The /api/classroom/:id/status route is defined below (after the quick-question
+// and submit endpoints) so it includes activeQuickQuestion and activeTest overlay logic.
+// A duplicate simple route was previously here that only returned { liveSessionActive }
+// and shadowed the full endpoint — this was the root cause of the QQ reload bug.
+
 app.get('/api/classroom/:id/content', async (req, res) => {
   try {
     const sessionToken = req.headers['authorization'];
@@ -722,6 +726,15 @@ app.get('/api/classroom/:id/content', async (req, res) => {
     const auth = await validateSession(sessionToken);
     if (!auth.authenticated) {
       return res.status(401).json({ error: auth.error });
+    }
+
+    // Verify student is still enrolled in this classroom
+    const enrollmentCheck = await query(
+      'SELECT 1 FROM UserClassrooms WHERE user_id = $1 AND classroom_id = $2',
+      [auth.user.id, classroomId]
+    );
+    if (enrollmentCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'access_revoked', message: 'You have been removed from this classroom.' });
     }
 
     // Check memory cache first
@@ -770,6 +783,15 @@ app.get('/api/workspace/:classroomId', async (req, res) => {
       return res.status(401).json({ error: auth.error });
     }
 
+    // Verify enrollment
+    const enrollmentCheck = await query(
+      'SELECT 1 FROM UserClassrooms WHERE user_id = $1 AND classroom_id = $2',
+      [auth.user.id, classroomId]
+    );
+    if (enrollmentCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'access_revoked', message: 'You have been removed from this classroom.' });
+    }
+
     const studentId = auth.user.id;
     const workspaceQuery = await query(
       'SELECT files FROM StudentWorkspaces WHERE student_id = $1 AND classroom_id = $2',
@@ -808,9 +830,19 @@ app.post('/api/workspace/:classroomId', async (req, res) => {
       return res.status(401).json({ error: auth.error });
     }
 
+    // Verify enrollment
+    const enrollmentCheck = await query(
+      'SELECT 1 FROM UserClassrooms WHERE user_id = $1 AND classroom_id = $2',
+      [auth.user.id, classroomId]
+    );
+    if (enrollmentCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'access_revoked', message: 'You have been removed from this classroom.' });
+    }
+
     if (!files || typeof files !== 'object') {
       return res.status(400).json({ error: 'Workspace files object required.' });
     }
+
 
     const studentId = auth.user.id;
     const stringifiedFiles = JSON.stringify(files);
@@ -870,6 +902,15 @@ app.post('/api/submit', async (req, res) => {
     const auth = await validateSession(sessionToken);
     if (!auth.authenticated) {
       return res.status(401).json({ error: auth.error });
+    }
+
+    // Verify enrollment
+    const enrollmentCheck = await query(
+      'SELECT 1 FROM UserClassrooms WHERE user_id = $1 AND classroom_id = $2',
+      [auth.user.id, classroomId]
+    );
+    if (enrollmentCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'access_revoked', message: 'You have been removed from this classroom.' });
     }
 
     const studentId = auth.user.id;
@@ -1052,6 +1093,9 @@ app.delete('/api/classroom/:id/test', async (req, res) => {
   }
 });
 
+// In-memory mapping of active quick questions per classroom
+const activeQuickQuestions = new Map();
+
 app.post('/api/classroom/:id/quick-question', async (req, res) => {
   try {
     const auth = await validateAdminSession(req.headers['authorization']);
@@ -1069,6 +1113,15 @@ app.post('/api/classroom/:id/quick-question', async (req, res) => {
     `, [id, topicNumber, activeTemplate, questionText]);
     const newQuestion = insertRes.rows[0];
 
+    // Store in active quick questions memory map
+    activeQuickQuestions.set(id, {
+      questionId: newQuestion.id,
+      questionText,
+      template: activeTemplate,
+      durationSeconds: 90,
+      pushedAt: Date.now()
+    });
+
     io.to(id).emit('classroom:quick_question', { 
       questionId: newQuestion.id, 
       questionText, 
@@ -1085,22 +1138,70 @@ app.post('/api/classroom/:id/quick-question', async (req, res) => {
 app.get('/api/classroom/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
-    
-    // Check status memory cache first
-    const cached = statusCache.get(id);
-    if (cached) {
-      return res.json(cached);
+    const sessionToken = req.headers['authorization'];
+
+    // Verify session
+    const auth = await validateSession(sessionToken);
+    if (!auth.authenticated) {
+      return res.status(401).json({ error: auth.error });
     }
 
-    const classroomQuery = await query('SELECT live_session_active FROM Classrooms WHERE id = $1', [id]);
-    const activeTestQuery = await query("SELECT * FROM Tests WHERE classroom_id = $1 AND status = 'active'", [id]);
-    
-    const payload = {
-      liveSessionActive: classroomQuery.rows[0]?.live_session_active || false,
-      activeTest: activeTestQuery.rows[0] || null
-    };
+    // Verify enrollment — reject removed students immediately on reload
+    const enrollmentCheck = await query(
+      'SELECT 1 FROM UserClassrooms WHERE user_id = $1 AND classroom_id = $2',
+      [auth.user.id, id]
+    );
+    if (enrollmentCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'access_revoked', message: 'You have been removed from this classroom.' });
+    }
 
-    statusCache.set(id, payload);
+    // Check status memory cache first
+    const cached = statusCache.get(id);
+    let payload;
+    if (cached) {
+      payload = { ...cached };
+    } else {
+      const classroomQuery = await query('SELECT live_session_active FROM Classrooms WHERE id = $1', [id]);
+      const activeTestQuery = await query("SELECT * FROM Tests WHERE classroom_id = $1 AND status = 'active'", [id]);
+      
+      payload = {
+        liveSessionActive: classroomQuery.rows[0]?.live_session_active || false,
+        activeTest: activeTestQuery.rows[0] || null
+      };
+
+      statusCache.set(id, payload);
+    }
+
+    // Overlay active quick question dynamically if not expired
+    const activeQQ = activeQuickQuestions.get(id);
+    let currentQQ = null;
+    console.log('[DEBUG-BACKEND] Checking activeQQ for classroom:', id, 'activeQQ is:', activeQQ);
+    if (activeQQ) {
+      const elapsed = Math.floor((Date.now() - activeQQ.pushedAt) / 1000);
+      const timeLeft = activeQQ.durationSeconds - elapsed;
+      console.log('[DEBUG-BACKEND] elapsed:', elapsed, 'timeLeft:', timeLeft);
+      if (timeLeft > 0) {
+        // Exclude if this specific student has already submitted this quick question
+        const submissionCheck = await query(
+          'SELECT 1 FROM Submissions WHERE student_id = $1 AND question_id = $2',
+          [auth.user.id, activeQQ.questionId]
+        );
+        console.log('[DEBUG-BACKEND] Submission check rows count:', submissionCheck.rows.length);
+        if (submissionCheck.rows.length === 0) {
+          currentQQ = {
+            questionId: activeQQ.questionId,
+            questionText: activeQQ.questionText,
+            template: activeQQ.template,
+            timeLeft
+          };
+        }
+      } else {
+        activeQuickQuestions.delete(id);
+      }
+    }
+    console.log('[DEBUG-BACKEND] final currentQQ to send:', currentQQ);
+    payload.activeQuickQuestion = currentQQ;
+
     res.json(payload);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1149,6 +1250,59 @@ app.get('/api/admin/bootstrap', async (req, res) => {
     const auth = await validateAdminSession(req.headers['authorization']);
     if (!auth.authenticated) return res.status(401).json({ error: auth.error });
     res.json({ email: auth.admin.email });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new Classroom
+app.post('/api/admin/classrooms', async (req, res) => {
+  try {
+    const auth = await validateAdminSession(req.headers['authorization']);
+    if (!auth.authenticated) return res.status(401).json({ error: auth.error });
+
+    const { title, classroom_id, status } = req.body;
+    if (!title || !title.trim()) return res.status(400).json({ error: 'Classroom title is required.' });
+    if (!classroom_id || !classroom_id.trim()) return res.status(400).json({ error: 'Join code (classroom_id) is required.' });
+
+    // Validate join code format: uppercase alphanumeric, 4-12 chars
+    const joinCodeRegex = /^[A-Z0-9]{4,12}$/;
+    if (!joinCodeRegex.test(classroom_id.trim().toUpperCase())) {
+      return res.status(400).json({ error: 'Join code must be 4–12 uppercase letters/numbers (e.g. REACT60).' });
+    }
+
+    const finalCode = classroom_id.trim().toUpperCase();
+    const finalStatus = ['active', 'pending_test', 'locked'].includes(status) ? status : 'active';
+
+    // Check for duplicate join code
+    const existing = await query('SELECT id FROM Classrooms WHERE classroom_id = $1', [finalCode]);
+    if (existing.rows.length > 0) return res.status(400).json({ error: `Join code "${finalCode}" is already in use.` });
+
+    const insertResult = await query(
+      `INSERT INTO Classrooms (classroom_id, title, status, live_session_active, tab_switch_blocked, paste_blocked)
+       VALUES ($1, $2, $3, false, true, true)
+       RETURNING id, classroom_id, title, status, live_session_active, created_at`,
+      [finalCode, title.trim(), finalStatus]
+    );
+
+    res.status(201).json({ classroom: insertResult.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a Classroom (cascades to all child records via FK)
+app.delete('/api/admin/classrooms/:id', async (req, res) => {
+  try {
+    const auth = await validateAdminSession(req.headers['authorization']);
+    if (!auth.authenticated) return res.status(401).json({ error: auth.error });
+
+    const { id } = req.params;
+    const existing = await query('SELECT id, title FROM Classrooms WHERE id = $1', [id]);
+    if (existing.rows.length === 0) return res.status(404).json({ error: 'Classroom not found.' });
+
+    await query('DELETE FROM Classrooms WHERE id = $1', [id]);
+    res.json({ success: true, message: `Classroom "${existing.rows[0].title}" deleted.` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1288,9 +1442,12 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
           SELECT json_agg(json_build_object(
             'id',                a.id,
             'title',             a.title,
+            'close_at',           a.close_at,
+            'workspace_template', a.workspace_template,
+            'options',            a.options,
+            'created_at',         a.created_at,
             'status',            a.status,
             'targetStudentIds',  a.assigned_to,
-            'createdAt',         a.created_at,
             'questions', COALESCE((
               SELECT json_agg(json_build_object(
                 'id',             aq.id,
@@ -1397,6 +1554,24 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
       }
     }
 
+    // Check if there is an active quick question
+    const activeQQ = activeQuickQuestions.get(id);
+    let currentQQ = null;
+    if (activeQQ) {
+      const elapsed = Math.floor((Date.now() - activeQQ.pushedAt) / 1000);
+      const timeLeft = activeQQ.durationSeconds - elapsed;
+      if (timeLeft > 0) {
+        currentQQ = {
+          questionId: activeQQ.questionId,
+          questionText: activeQQ.questionText,
+          template: activeQQ.template,
+          timeLeft
+        };
+      } else {
+        activeQuickQuestions.delete(id);
+      }
+    }
+
     res.json({
       roster,
       activeStudentIds,
@@ -1404,7 +1579,8 @@ app.get('/api/admin/classroom/:id/details', async (req, res) => {
       quickQuestions: row.quickQuestions || [],
       assignments:    row.assignments    || [],
       notes:          row.notes          || [],
-      rules:          row.rules          || { tabSwitchBlocked: true, pasteBlocked: true }
+      rules:          row.rules          || { tabSwitchBlocked: true, pasteBlocked: true },
+      activeQuickQuestion: currentQQ
     });
   } catch (err) {
     console.error('[DETAILS-ERROR] Failed to fetch classroom details:', err);
@@ -1563,7 +1739,7 @@ app.post('/api/admin/classroom/:classroomId/assignments', async (req, res) => {
     if (!auth.authenticated) return res.status(401).json({ error: auth.error });
 
     const { classroomId } = req.params;
-    const { id, title, assignedTo, status, openAt, closeAt, questions } = req.body;
+    const { id, title, assignedTo, status, openAt, closeAt, questions, workspaceTemplate, options } = req.body;
 
     if (!title) {
       return res.status(400).json({ error: 'Assignment title is required.' });
@@ -1573,17 +1749,17 @@ app.post('/api/admin/classroom/:classroomId/assignments', async (req, res) => {
     if (id) {
       const updateRes = await query(
         `UPDATE Assignments 
-         SET title = $1, assigned_to = $2, status = $3, open_at = $4, close_at = $5
-         WHERE id = $6 AND classroom_id = $7 RETURNING *`,
-        [title, assignedTo ? JSON.stringify(assignedTo) : null, status, openAt, closeAt, id, classroomId]
+         SET title = $1, assigned_to = $2, status = $3, open_at = $4, close_at = $5, workspace_template = $6, options = $7
+         WHERE id = $8 AND classroom_id = $9 RETURNING *`,
+        [title, assignedTo ? JSON.stringify(assignedTo) : null, status, openAt, closeAt, workspaceTemplate || 'node', options ? JSON.stringify(options) : '{}', id, classroomId]
       );
       assignment = updateRes.rows[0];
       await query('DELETE FROM AssignmentQuestions WHERE assignment_id = $1', [id]);
     } else {
       const insertRes = await query(
-        `INSERT INTO Assignments (classroom_id, title, assigned_to, status, open_at, close_at)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [classroomId, title, assignedTo ? JSON.stringify(assignedTo) : null, status || 'draft', openAt, closeAt]
+        `INSERT INTO Assignments (classroom_id, title, assigned_to, status, open_at, close_at, workspace_template, options)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [classroomId, title, assignedTo ? JSON.stringify(assignedTo) : null, status || 'draft', openAt, closeAt, workspaceTemplate || 'node', options ? JSON.stringify(options) : '{}']
       );
       assignment = insertRes.rows[0];
     }
@@ -1617,7 +1793,50 @@ app.post('/api/admin/classroom/:classroomId/assignments', async (req, res) => {
     assignmentsCache.delete(assignment.id);
 
     io.to(classroomId).emit('classroom:assignments_updated');
+    
+    // Broadcast live assignment launch to student workspaces
+    if (assignment.status === 'active') {
+      const parsedAssignedTo = assignment.assigned_to 
+        ? (Array.isArray(assignment.assigned_to) ? assignment.assigned_to : JSON.parse(assignment.assigned_to)) 
+        : null;
+        
+      io.to(classroomId).emit('classroom:assignment_live', {
+        id: assignment.id,
+        title: assignment.title,
+        assignedTo: parsedAssignedTo
+      });
+    }
+    
     res.json({ success: true, assignment });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Delete assignment
+app.delete('/api/admin/classroom/:classroomId/assignments/:assignmentId', async (req, res) => {
+  try {
+    const auth = await validateAdminSession(req.headers['authorization']);
+    if (!auth.authenticated) return res.status(401).json({ error: auth.error });
+
+    const { classroomId, assignmentId } = req.params;
+    
+    // Manually delete child records first to prevent FK constraint violations 
+    // in case the database lacks ON DELETE CASCADE
+    await query('DELETE FROM AssignmentSubmissions WHERE assignment_id = $1', [assignmentId]);
+    await query('DELETE FROM AssignmentQuestions WHERE assignment_id = $1', [assignmentId]);
+    
+    // Delete assignment
+    await query(
+      'DELETE FROM Assignments WHERE id = $1 AND classroom_id = $2',
+      [assignmentId, classroomId]
+    );
+
+    // Invalidate assignments cache
+    assignmentsCache.delete(assignmentId);
+
+    io.to(classroomId).emit('classroom:assignments_updated');
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
